@@ -449,7 +449,7 @@ dnstt-client -doh <best-url> -pubkey-file server.pub t.mysite.com 127.0.0.1:1080
 
 ## 🙏 Credits
 
-This project was originally inspired by [net2share/findns](https://github.com/net2share/findns). We rebuilt and expanded it with DoH support, NXDOMAIN/EDNS checks, a full scan pipeline, TUI, cross-platform fixes, and CI releases.
+This project was originally inspired by [net2share/dnst-scanner](https://github.com/net2share/dnst-scanner). We rebuilt and expanded it with DoH support, NXDOMAIN/EDNS checks, a full scan pipeline, TUI, cross-platform fixes, and CI releases.
 
 ---
 
@@ -558,7 +558,7 @@ go install github.com/SamNet-dev/findns/cmd@latest
 
 ### پیش‌نیازها
 
-- **Go 1.22+** برای بیلد از سورس
+- **Go 1.24+** برای بیلد از سورس
 - **dnstt-client** در PATH (برای تست e2e DNSTT)
 - **slipstream-client** در PATH (برای تست e2e Slipstream)
 - **curl** در PATH (برای تأیید اتصال e2e)
@@ -748,7 +748,7 @@ dnstt-client -doh <best-url> -pubkey-file server.pub t.mysite.com 127.0.0.1:1080
 
 ## 🙏 تقدیر
 
-این پروژه با الهام از [net2share/findns](https://github.com/net2share/findns) ساخته شده و با پشتیبانی DoH، بررسی NXDOMAIN/EDNS، پایپلاین اسکن، رابط کاربری ترمینال، رفع مشکلات چندسکویی و CI بازسازی و گسترش یافته است.
+این پروژه با الهام از [net2share/dnst-scanner](https://github.com/net2share/dnst-scanner) ساخته شده و با پشتیبانی DoH، بررسی NXDOMAIN/EDNS، پایپلاین اسکن، رابط کاربری ترمینال، رفع مشکلات چندسکویی و CI بازسازی و گسترش یافته است.
 
 ---
 
