@@ -87,7 +87,8 @@ func writeReport(mode string, results []scanner.Result, elapsed time.Duration, s
 	return nil
 }
 
-// findBinary looks for a binary in PATH first, then in the current directory.
+// findBinary looks for a binary in PATH, then in the current directory,
+// then next to the findns executable itself.
 // On Linux, exec.LookPath does NOT check the current directory, so users placing
 // dnstt-client next to the scanner get "not found". This fixes that.
 func findBinary(name string) (string, error) {
@@ -96,14 +97,23 @@ func findBinary(name string) (string, error) {
 		return p, nil
 	}
 
-	// Check current directory
 	local := name
 	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
 		local = name + ".exe"
 	}
+
+	// Check current directory
 	if abs, err := filepath.Abs(local); err == nil {
 		if _, err := os.Stat(abs); err == nil {
 			return abs, nil
+		}
+	}
+
+	// Check directory where findns executable is located
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), local)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
 		}
 	}
 
@@ -115,7 +125,7 @@ func findBinary(name string) (string, error) {
 		hint = "\n\nDownload from: https://github.com/Mygod/slipstream-rust/releases"
 	}
 
-	return "", fmt.Errorf("%s not found in PATH or current directory.%s\n\nIf already downloaded, either:\n  1. Move it to a folder in PATH:  sudo mv %s /usr/local/bin/\n  2. Or add current directory to PATH:  export PATH=$PATH:$(pwd)", name, hint, name)
+	return "", fmt.Errorf("%s not found in PATH, current directory, or next to findns.%s\n\nIf already downloaded, either:\n  1. Place it next to the findns executable\n  2. Move it to a folder in PATH:  sudo mv %s /usr/local/bin/\n  3. Or add current directory to PATH:  export PATH=$PATH:$(pwd)", name, hint, name)
 }
 
 func isTTY() bool {
