@@ -26,8 +26,20 @@ func queryRaw(resolver, domain string, qtype uint16, timeout time.Duration) (*dn
 	defer cancel()
 
 	r, _, err := c.ExchangeContext(ctx, m, addr)
+
+	// If EDNS0 caused FORMERR, retry without it
+	if err == nil && r != nil && r.Rcode == dns.RcodeFormatError {
+		m.Extra = nil // strip EDNS0 OPT record
+		r, _, err = c.ExchangeContext(ctx, m, addr)
+	}
+
+	// If UDP failed entirely, try TCP before giving up
 	if err != nil || r == nil {
-		return nil, false
+		c.Net = "tcp"
+		r, _, err = c.ExchangeContext(ctx, m, addr)
+		if err != nil || r == nil {
+			return nil, false
+		}
 	}
 
 	// Retry over TCP if response was truncated
