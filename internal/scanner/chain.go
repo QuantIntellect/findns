@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,15 +32,23 @@ type ChainReport struct {
 type ProgressFactory func(stepName string) ProgressFunc
 
 func RunChain(ips []string, workers int, steps []Step, newProgress ProgressFactory) ChainReport {
-	return runChain(ips, workers, steps, newProgress, false)
+	return runChain(context.Background(), ips, workers, steps, newProgress, false)
 }
 
 // RunChainQuiet runs the chain without printing step-by-step logs (for scan command which has its own summary).
 func RunChainQuiet(ips []string, workers int, steps []Step, newProgress ProgressFactory) ChainReport {
-	return runChain(ips, workers, steps, newProgress, true)
+	return runChain(context.Background(), ips, workers, steps, newProgress, true)
 }
 
-func runChain(ips []string, workers int, steps []Step, newProgress ProgressFactory, quiet bool) ChainReport {
+func RunChainCtx(ctx context.Context, ips []string, workers int, steps []Step, newProgress ProgressFactory) ChainReport {
+	return runChain(ctx, ips, workers, steps, newProgress, false)
+}
+
+func RunChainQuietCtx(ctx context.Context, ips []string, workers int, steps []Step, newProgress ProgressFactory) ChainReport {
+	return runChain(ctx, ips, workers, steps, newProgress, true)
+}
+
+func runChain(ctx context.Context, ips []string, workers int, steps []Step, newProgress ProgressFactory, quiet bool) ChainReport {
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "chain: %d IPs, %d steps\n", len(ips), len(steps))
 	}
@@ -50,13 +59,18 @@ func runChain(ips []string, workers int, steps []Step, newProgress ProgressFacto
 	var stepResults []StepResult
 
 	for _, step := range steps {
+		// Stop between steps if interrupted
+		if ctx.Err() != nil {
+			break
+		}
+
 		var progress ProgressFunc
 		if newProgress != nil {
 			progress = newProgress(step.Name)
 		}
 
 		start := time.Now()
-		results := RunPool(current, workers, step.Timeout, step.Check, progress)
+		results := RunPoolCtx(ctx, current, workers, step.Timeout, step.Check, progress)
 		elapsed := time.Since(start)
 
 		var passed, failed int

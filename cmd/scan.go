@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"time"
@@ -167,9 +169,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	printBanner(len(ips), dohMode, domain, steps)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	scanStart := time.Now()
-	report := scanner.RunChainQuiet(ips, workers, steps, newProgressFactoryWithTotal(len(steps)))
+	report := scanner.RunChainQuietCtx(ctx, ips, workers, steps, newProgressFactoryWithTotal(len(steps)))
 	totalTime := time.Since(scanStart)
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n\n  %s⚠ Interrupted — saving partial results to %s%s\n", colorYellow, outputFile, colorReset)
+	}
 
 	printSummary(report, topN, totalTime)
 

@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/SamNet-dev/findns/internal/scanner"
@@ -43,9 +47,16 @@ func runE2EDnstt(cmd *cobra.Command, args []string) error {
 	ports := scanner.PortPool(30000, workers)
 	check := scanner.DnsttCheckBin(bin, domain, pubkey, testURL, proxyAuth, ports)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	start := time.Now()
-	results := scanner.RunPool(ips, workers, dur, check, newProgress("e2e/dnstt"))
+	results := scanner.RunPoolCtx(ctx, ips, workers, dur, check, newProgress("e2e/dnstt"))
 	elapsed := time.Since(start)
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠ Interrupted — saving partial results\n")
+	}
 
 	return writeReport("e2e/dnstt", results, elapsed, "e2e_ms")
 }

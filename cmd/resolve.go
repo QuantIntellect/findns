@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/SamNet-dev/findns/internal/scanner"
@@ -30,9 +34,16 @@ func runResolve(cmd *cobra.Command, args []string) error {
 	dur := time.Duration(timeout) * time.Second
 	check := scanner.ResolveCheck(domain, count)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	start := time.Now()
-	results := scanner.RunPool(ips, workers, dur, check, newProgress("resolve"))
+	results := scanner.RunPoolCtx(ctx, ips, workers, dur, check, newProgress("resolve"))
 	elapsed := time.Since(start)
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠ Interrupted — saving partial results\n")
+	}
 
 	return writeReport("resolve", results, elapsed, "resolve_ms")
 }

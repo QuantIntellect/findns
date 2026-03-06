@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/SamNet-dev/findns/internal/scanner"
@@ -30,9 +34,16 @@ func runEDNS(cmd *cobra.Command, args []string) error {
 	dur := time.Duration(timeout) * time.Second
 	check := scanner.EDNSCheck(domain, count)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	start := time.Now()
-	results := scanner.RunPool(ips, workers, dur, check, newProgress("edns"))
+	results := scanner.RunPoolCtx(ctx, ips, workers, dur, check, newProgress("edns"))
 	elapsed := time.Since(start)
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠ Interrupted — saving partial results\n")
+	}
 
 	return writeReport("edns", results, elapsed, "edns_max")
 }

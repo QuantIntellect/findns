@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/SamNet-dev/findns/internal/scanner"
@@ -42,9 +46,16 @@ func runE2ESlipstream(cmd *cobra.Command, args []string) error {
 	ports := scanner.PortPool(30000, workers)
 	check := scanner.SlipstreamCheckBin(bin, domain, certPath, testURL, proxyAuth, ports)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	start := time.Now()
-	results := scanner.RunPool(ips, workers, dur, check, newProgress("e2e/slipstream"))
+	results := scanner.RunPoolCtx(ctx, ips, workers, dur, check, newProgress("e2e/slipstream"))
 	elapsed := time.Since(start)
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠ Interrupted — saving partial results\n")
+	}
 
 	return writeReport("e2e/slipstream", results, elapsed, "e2e_ms")
 }

@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"math"
 	"sort"
 	"time"
@@ -19,6 +20,10 @@ type CheckFunc func(ip string, timeout time.Duration) (bool, Metrics)
 type ProgressFunc func(done, total, passed, failed int)
 
 func RunPool(ips []string, workers int, timeout time.Duration, check CheckFunc, onProgress ProgressFunc) []Result {
+	return RunPoolCtx(context.Background(), ips, workers, timeout, check, onProgress)
+}
+
+func RunPoolCtx(ctx context.Context, ips []string, workers int, timeout time.Duration, check CheckFunc, onProgress ProgressFunc) []Result {
 	jobs := make(chan string)
 	results := make(chan Result)
 
@@ -40,7 +45,12 @@ func RunPool(ips []string, workers int, timeout time.Duration, check CheckFunc, 
 
 	go func() {
 		for _, ip := range ips {
-			jobs <- ip
+			select {
+			case jobs <- ip:
+			case <-ctx.Done():
+				close(jobs)
+				return
+			}
 		}
 		close(jobs)
 	}()
@@ -48,15 +58,19 @@ func RunPool(ips []string, workers int, timeout time.Duration, check CheckFunc, 
 	var pass, fail int
 	out := make([]Result, 0, len(ips))
 	for i := 0; i < len(ips); i++ {
-		r := <-results
-		out = append(out, r)
-		if r.OK {
-			pass++
-		} else {
-			fail++
-		}
-		if onProgress != nil {
-			onProgress(i+1, len(ips), pass, fail)
+		select {
+		case r := <-results:
+			out = append(out, r)
+			if r.OK {
+				pass++
+			} else {
+				fail++
+			}
+			if onProgress != nil {
+				onProgress(i+1, len(ips), pass, fail)
+			}
+		case <-ctx.Done():
+			return out
 		}
 	}
 	return out

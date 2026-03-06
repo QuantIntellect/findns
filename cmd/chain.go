@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"time"
@@ -227,6 +230,14 @@ func runChain(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--output / -o flag is required")
 	}
 
-	report := scanner.RunChain(ips, workers, steps, newProgressFactory())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	report := scanner.RunChainCtx(ctx, ips, workers, steps, newProgressFactory())
+
+	if ctx.Err() != nil {
+		fmt.Fprintf(os.Stderr, "\n⚠ Interrupted — saving partial results to %s\n", outputFile)
+	}
+
 	return scanner.WriteChainReport(report, outputFile)
 }
