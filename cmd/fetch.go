@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SamNet-dev/findns/internal/data"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +22,7 @@ var fetchCmd = &cobra.Command{
 
 func init() {
 	fetchCmd.Flags().StringP("output", "o", "resolvers.txt", "output file for merged resolver list")
-	fetchCmd.Flags().Bool("local", false, "include regional intranet resolvers from ir-resolvers")
+	fetchCmd.Flags().Bool("local", false, "include 7,800+ known Iranian resolvers (bundled, no download needed)")
 	fetchCmd.Flags().Bool("doh", false, "fetch DoH resolver URLs instead of UDP IPs")
 	rootCmd.AddCommand(fetchCmd)
 }
@@ -31,7 +32,6 @@ var udpResolverSources = []struct {
 	url  string
 }{
 	{"trickest/resolvers", "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"},
-	{"ir-resolvers (local)", "https://raw.githubusercontent.com/net2share/ir-resolvers/main/resolvers.txt"},
 }
 
 var dohResolverSources = []struct {
@@ -100,11 +100,8 @@ func runFetch(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "  +%d DoH endpoints\n", added)
 		}
 	} else {
-		// Fetch UDP resolver IPs
+		// Fetch UDP resolver IPs from online sources
 		for _, src := range udpResolverSources {
-			if src.name == "ir-resolvers (local)" && !localMode {
-				continue
-			}
 			fmt.Fprintf(os.Stderr, "fetching %s...\n", src.name)
 			ips, err := fetchIPList(src.url)
 			if err != nil {
@@ -120,6 +117,24 @@ func runFetch(cmd *cobra.Command, args []string) error {
 				}
 			}
 			fmt.Fprintf(os.Stderr, "  +%d resolvers\n", added)
+		}
+
+		// Add known Iranian resolvers from bundled list
+		if localMode {
+			localIPs, err := data.IRResolvers()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: reading embedded resolvers: %v\n", err)
+			} else {
+				added := 0
+				for _, ip := range localIPs {
+					if _, exists := seen[ip]; !exists {
+						seen[ip] = struct{}{}
+						entries = append(entries, ip)
+						added++
+					}
+				}
+				fmt.Fprintf(os.Stderr, "  +%d known Iranian resolvers (bundled, no download needed)\n", added)
+			}
 		}
 	}
 

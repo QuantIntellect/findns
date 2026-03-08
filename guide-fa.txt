@@ -102,16 +102,129 @@ findns همه این‌ها را به صورت خودکار تست می‌کند
   این دستور از منبع trickest/resolvers حدود 17,000+ آی‌پی resolver
   عمومی را دانلود می‌کند.
 
-دانلود با resolverهای ایران (محلی):
+دانلود با resolverهای ایرانی (--local):
   findns fetch -o resolvers.txt --local
 
-  این دستور علاوه بر resolverهای جهانی، 7,800+ آی‌پی resolver
-  ایرانی/منطقه‌ای از ir-resolvers را هم اضافه می‌کند.
-  مجموعاً حدود 25,000+ resolver.
+  این دستور علاوه بر resolverهای جهانی، 7,800+ resolver شناخته‌شده
+  ایرانی را هم به لیست اضافه می‌کند. این resolverها از قبل تأیید
+  شده‌اند (منبع: ir-resolvers) و نرخ موفقیت بالایی در اسکن دارند.
+
+  نکته مهم: فلگ --local به هیچ سرور خارجی وصل نمی‌شود!
+    لیست resolverهای ایرانی داخل خود برنامه ذخیره شده‌اند (embedded).
+    حتی اگر GitHub فیلتر باشد، این فلگ کار می‌کند.
 
   چرا resolverهای ایرانی مهم هستند؟
     در شبکه ایران، resolverهای داخلی معمولاً سریع‌تر جواب می‌دهند
     و ممکن است محدودیت کمتری داشته باشند.
+
+  برای پیدا کردن resolverهای جدید از دستور "findns local --discover"
+  استفاده کنید (بخش بعد).
+
+------------------------------------------------------------------------
+دستور local - resolverهای ایرانی داخلی
+------------------------------------------------------------------------
+
+  دستور local داده‌های ایرانی داخل خود برنامه را خروجی می‌دهد —
+  نیازی به اینترنت ندارد. دو حالت دارد:
+
+  ===== حالت 1: resolverهای شناخته‌شده (پیش‌فرض — پیشنهادی) =====
+
+    بدون هیچ فلگ اضافه، 7,800+ resolver ایرانی از قبل تأیید‌شده
+    را خروجی می‌دهد (منبع: ir-resolvers). نرخ موفقیت بالا.
+
+    findns local -o resolvers.txt
+
+    بعد اسکن کنید:
+    findns scan -i resolvers.txt -o results.json --domain t.mysite.com
+
+    این بهترین نقطه شروع است — چون این آی‌پی‌ها واقعاً DNS resolver
+    هستند، اکثرشان در اسکن پاس می‌شوند.
+
+  ===== حالت 2: کشف resolver جدید (--discover) =====
+
+    اگر می‌خواهید resolverهایی پیدا کنید که در لیست شناخته‌شده
+    نیستند، از --discover استفاده کنید. از 1,919 رنج CIDR ایرانی
+    (منبع: RIPE NCC، ~10.8 میلیون آی‌پی) استفاده می‌کند.
+
+    مهم: این آی‌پی‌ها resolver نیستند! فقط کاندید هستند.
+    اکثرشان DNS server نیستند و در اسکن فیل می‌شوند.
+
+  --- نمونه‌گیری / Sample (پیش‌فرض discover) ---
+
+    از هر subnet تعدادی آی‌پی تصادفی انتخاب می‌کند.
+    سریع و پوشش خوبی دارد.
+
+    findns local -o candidates.txt --discover                # 10 آی‌پی/subnet (~19,000 کل)
+    findns local -o candidates.txt --discover --sample 5     # 5 آی‌پی/subnet (~9,500 کل)
+    findns local -o candidates.txt --discover --sample 50    # 50 آی‌پی/subnet (~95,000 کل)
+
+    بعد اسکن کنید:
+    findns scan -i candidates.txt -o results.json --domain t.mysite.com
+
+  --- دسته‌ای / Batch (اسکن تدریجی) ---
+
+    اگر می‌خواهید همه آی‌پی‌ها را اسکن کنید ولی یکجا نه:
+
+    findns local -o batch1.txt --discover --batch 1000000
+    # برنامه می‌گوید:
+    #   next batch command:
+    #     findns local -o <next-file>.txt --discover --batch 1000000 --offset 1000000
+    #   remaining: 9,815,490 IPs
+
+    findns local -o batch2.txt --discover --batch 1000000 --offset 1000000
+
+    هر دسته رنج متفاوتی دارد — هیچ آی‌پی تکراری بین دسته‌ها نیست.
+    --offset تضمین می‌کند هیچ آی‌پی دو بار اسکن نشود.
+
+    هر دسته را جداگانه اسکن کنید:
+    findns scan -i batch1.txt -o results1.json --domain t.mysite.com
+    findns scan -i batch2.txt -o results2.json --domain t.mysite.com
+
+  --- کامل / Full ---
+
+    تمام ~10.8 میلیون آی‌پی ایرانی:
+    findns local -o all-iran.txt --discover --full
+    هشدار: اسکن کامل روزها طول می‌کشد!
+    پیشنهاد: به جای full از --discover --batch 1000000 استفاده کنید.
+
+  --- نمایش رنج‌ها (بدون تولید فایل) ---
+
+    findns local --list-ranges
+    نیازی به -o ندارد.
+
+  توضیح هر فلگ:
+
+    -o, --output FILE    مسیر فایل خروجی. در همه حالت‌ها الزامی است
+                         به جز --list-ranges.
+
+    --discover           حالت کشف resolver جدید. بدون این فلگ،
+                         resolverهای شناخته‌شده خروجی داده می‌شوند.
+
+    --sample N           [discover] از هر subnet چند آی‌پی تصادفی
+                         انتخاب شود. بزرگ‌تر = پوشش بیشتر ولی کندتر.
+                         عدد 0 مثل --full عمل می‌کند.  [پیش‌فرض: 10]
+
+    --full               [discover] تمام ~10.8M آی‌پی را خروجی بده.
+                         فلگ --sample را نادیده می‌گیرد.
+
+    --batch N            [discover] دقیقاً N آی‌پی خروجی بده.
+                         هر بار با --offset متفاوت، رنج جدید می‌دهد.
+                         هیچ آی‌پی تکراری بین دسته‌ها نیست.
+
+    --offset N           [discover] با --batch استفاده می‌شود.
+                         از آی‌پی شماره N شروع کن (0-indexed).
+                         برنامه بعد از هر دسته offset بعدی را نشان می‌دهد.
+                         [پیش‌فرض: 0]
+
+    --list-ranges        فقط رنج‌های CIDR ایرانی را چاپ کن.
+                         نیازی به -o ندارد.
+
+  اولویت فلگ‌ها:
+    1. بدون --discover → resolverهای شناخته‌شده (7,800+)
+    2. --list-ranges → فقط چاپ رنج‌ها
+    3. --discover --batch > 0 → حالت دسته‌ای (sample و full نادیده)
+    4. --discover --full → حالت کامل (sample نادیده)
+    5. --discover → حالت نمونه‌گیری با --sample N
 
 دانلود resolverهای DoH:
   findns fetch -o doh-resolvers.txt --doh

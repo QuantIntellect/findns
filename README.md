@@ -162,7 +162,7 @@ Use `.\findns.exe` instead of `./scanner` in all commands:
 # 📥 Download global UDP resolvers
 ./scanner fetch -o resolvers.txt
 
-# 🌍 Include regional intranet resolvers
+# 🌍 Include 7,800+ known regional resolvers (embedded, offline)
 ./scanner fetch -o resolvers.txt --local
 
 # 🔒 Download DoH resolver URLs
@@ -237,7 +237,7 @@ Automatically downloads and deduplicates resolver lists from public sources.
 # Global UDP resolvers (from trickest/resolvers)
 ./scanner fetch -o resolvers.txt
 
-# Include regional intranet resolvers (7,800+ IPs)
+# Include 7,800+ known regional resolvers (embedded, no download needed)
 ./scanner fetch -o resolvers.txt --local
 
 # DoH resolver URLs (19+ well-known + public lists)
@@ -249,6 +249,41 @@ Automatically downloads and deduplicates resolver lists from public sources.
 - 🟠 Cloudflare (`cloudflare-dns.com`)
 - 🟣 Quad9 (`dns.quad9.net`)
 - 🟢 AdGuard, Mullvad, NextDNS, LibreDNS, BlahDNS, and more
+
+---
+
+### 🌍 `local` — Export Bundled Regional Data
+
+Export regional resolver data bundled inside the binary. No internet connection needed.
+
+**Two modes:**
+
+```bash
+# Mode 1: Known resolvers (default, recommended)
+# Exports 7,800+ pre-verified regional DNS resolvers — high scan success rate
+./scanner local -o resolvers.txt
+
+# Mode 2: Discover NEW resolvers (--discover)
+# Exports candidate IPs from 1,919 CIDR ranges (~10.8M IPs)
+# Most will NOT be DNS servers — use this to find resolvers not in the known list
+./scanner local -o candidates.txt --discover
+
+# Discovery with batch scanning (non-overlapping, no duplicates)
+./scanner local -o batch1.txt --discover --batch 1000000
+./scanner local -o batch2.txt --discover --batch 1000000 --offset 1000000
+
+# Show embedded CIDR ranges
+./scanner local --list-ranges
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--discover` | Switch to discovery mode (CIDR expansion) | `false` |
+| `--sample N` | [discover] Random IPs per subnet | `10` |
+| `--full` | [discover] Export all ~10.8M IPs | `false` |
+| `--batch N` | [discover] Export exactly N IPs (use with `--offset`) | `0` |
+| `--offset N` | [discover] Skip N IPs before starting batch | `0` |
+| `--list-ranges` | Print embedded CIDR ranges and exit | `false` |
 
 ---
 
@@ -741,7 +776,7 @@ go build -o findns.exe ./cmd
 # 📥 دانلود resolverهای UDP جهانی
 ./scanner fetch -o resolvers.txt
 
-# 🌍 شامل resolverهای محلی
+# 🌍 شامل 7,800+ resolver شناخته‌شده ایرانی (بدون اینترنت)
 ./scanner fetch -o resolvers.txt --local
 
 # 🔒 دانلود آدرس‌های DoH
@@ -814,11 +849,49 @@ go build -o findns.exe ./cmd
 
 ```bash
 ./scanner fetch -o resolvers.txt           # resolverهای UDP جهانی
-./scanner fetch -o resolvers.txt --local    # + resolverهای محلی
+./scanner fetch -o resolvers.txt --local    # + 7,800+ resolver شناخته‌شده ایرانی
 ./scanner fetch -o doh-resolvers.txt --doh # آدرس‌های DoH
 ```
 
 <div dir="rtl">
+
+---
+
+### 🌍 `local` — resolverهای ایرانی داخلی
+
+داده‌های ایرانی داخل خود برنامه را خروجی می‌دهد — نیازی به اینترنت ندارد.
+
+**دو حالت:**
+
+</div>
+
+```bash
+# حالت 1: resolverهای شناخته‌شده (پیش‌فرض — پیشنهادی)
+# 7,800+ resolver تأیید‌شده — نرخ موفقیت بالا
+./scanner local -o resolvers.txt
+
+# حالت 2: کشف resolver جدید (--discover)
+# از رنج‌های CIDR ایرانی (~10.8M آی‌پی)
+./scanner local -o candidates.txt --discover
+
+# اسکن دسته‌ای (بدون تکرار)
+./scanner local -o batch1.txt --discover --batch 1000000
+./scanner local -o batch2.txt --discover --batch 1000000 --offset 1000000
+
+# نمایش رنج‌ها
+./scanner local --list-ranges
+```
+
+<div dir="rtl">
+
+| فلگ | توضیح |
+|-----|-------|
+| `--discover` | حالت کشف resolver جدید (از CIDR) |
+| `--sample N` | [discover] آی‌پی تصادفی از هر subnet (پیش‌فرض: 10) |
+| `--full` | [discover] تمام ~10.8M آی‌پی |
+| `--batch N` | [discover] دقیقاً N آی‌پی (با `--offset`) |
+| `--offset N` | [discover] رد کردن N آی‌پی اول |
+| `--list-ranges` | چاپ رنج‌های CIDR |
 
 ---
 
