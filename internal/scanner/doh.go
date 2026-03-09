@@ -138,7 +138,7 @@ func DoHResolveCheck(domain string, count int) CheckFunc {
 	}
 }
 
-// DoHTunnelCheck tests NS delegation via DoH resolver.
+// DoHTunnelCheck tests if a DoH resolver can forward queries to the tunnel domain.
 func DoHTunnelCheck(domain string, count int) CheckFunc {
 	return func(url string, timeout time.Duration) (bool, Metrics) {
 		var successes []float64
@@ -146,17 +146,13 @@ func DoHTunnelCheck(domain string, count int) CheckFunc {
 		for i := 0; i < count; i++ {
 			start := time.Now()
 
-			hosts, ok := QueryDoHNS(url, domain, timeout)
-			if !ok || len(hosts) == 0 {
+			// Query a random subdomain TXT record — same as what dnstt-client does.
+			qname := fmt.Sprintf("tun-%s.%s", randLabel(8), domain)
+			r, ok := queryDoHRaw(url, qname, dns.TypeTXT, timeout)
+			if !ok || r == nil {
 				continue
 			}
-
-			// Verify glue record via same DoH resolver
-			nsHost := hosts[0]
-			if last := len(nsHost) - 1; last >= 0 && nsHost[last] == '.' {
-				nsHost = nsHost[:last]
-			}
-			if !QueryDoHA(url, nsHost, timeout) {
+			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
 				continue
 			}
 

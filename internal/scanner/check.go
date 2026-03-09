@@ -7,8 +7,9 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // Regex for Linux/macOS: "rtt min/avg/max/mdev = 4.123/5.456/6.789/..."
@@ -103,15 +104,16 @@ func TunnelCheck(domain string, count int) CheckFunc {
 		for i := 0; i < count; i++ {
 			start := time.Now()
 
-			// Step 1: Query NS for the tunnel domain
-			hosts, ok := QueryNS(ip, domain, timeout)
-			if !ok || len(hosts) == 0 {
+			// Query a random subdomain TXT record — same as what dnstt-client does.
+			// If the resolver forwards it to the authoritative server, the tunnel works.
+			// NS queries fail on most setups because dnstt-server/dnstm don't serve NS records.
+			qname := fmt.Sprintf("tun-%s.%s", randLabel(8), domain)
+			r, ok := queryRaw(ip, qname, dns.TypeTXT, timeout)
+			if !ok || r == nil {
 				continue
 			}
-
-			// Step 2: Resolve the first NS hostname to verify glue record
-			nsHost := strings.TrimRight(hosts[0], ".")
-			if !QueryA(ip, nsHost, timeout) {
+			// SERVFAIL/REFUSED = resolver can't reach the authoritative server
+			if r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
 				continue
 			}
 
