@@ -55,13 +55,25 @@ func testEDNSPayload(resolver, domain string, payload uint16, timeout time.Durat
 		c.Net = "udp"
 		c.Timeout = timeout
 
+		addr := net.JoinHostPort(resolver, "53")
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		r, _, err := c.ExchangeContext(ctx, m, net.JoinHostPort(resolver, "53"))
-		cancel()
+		r, _, err := c.ExchangeContext(ctx, m, addr)
 
 		if err != nil || r == nil {
+			cancel()
 			continue
 		}
+
+		// If EDNS0 caused FORMERR, retry without it
+		if r.Rcode == dns.RcodeFormatError {
+			m.Extra = nil
+			r, _, err = c.ExchangeContext(ctx, m, addr)
+			if err != nil || r == nil {
+				cancel()
+				continue
+			}
+		}
+		cancel()
 
 		// NOERROR or NXDOMAIN both count as "resolver handled it"
 		if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {

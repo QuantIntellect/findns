@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const maxConsecFail = 3
-
 // Regex for Linux/macOS: "rtt min/avg/max/mdev = 4.123/5.456/6.789/..."
 var pingAvgRegex = regexp.MustCompile(`= [\d.]+/([\d.]+)/`)
 
@@ -59,7 +57,7 @@ func PingCheck(count int) CheckFunc {
 		if secs < 1 {
 			secs = 1
 		}
-		deadline := count + secs
+		deadline := count*secs + 2
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(deadline+2)*time.Second)
 		defer cancel()
 
@@ -77,19 +75,12 @@ func PingCheck(count int) CheckFunc {
 func ResolveCheck(domain string, count int) CheckFunc {
 	return func(ip string, timeout time.Duration) (bool, Metrics) {
 		var successes []float64
-		var consecFail int
 
 		for i := 0; i < count; i++ {
 			start := time.Now()
 			if QueryA(ip, domain, timeout) {
 				ms := float64(time.Since(start).Microseconds()) / 1000.0
 				successes = append(successes, ms)
-				consecFail = 0
-			} else {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 			}
 		}
 
@@ -108,7 +99,6 @@ func ResolveCheck(domain string, count int) CheckFunc {
 func TunnelCheck(domain string, count int) CheckFunc {
 	return func(ip string, timeout time.Duration) (bool, Metrics) {
 		var successes []float64
-		var consecFail int
 
 		for i := 0; i < count; i++ {
 			start := time.Now()
@@ -116,26 +106,17 @@ func TunnelCheck(domain string, count int) CheckFunc {
 			// Step 1: Query NS for the tunnel domain
 			hosts, ok := QueryNS(ip, domain, timeout)
 			if !ok || len(hosts) == 0 {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 				continue
 			}
 
 			// Step 2: Resolve the first NS hostname to verify glue record
 			nsHost := strings.TrimRight(hosts[0], ".")
 			if !QueryA(ip, nsHost, timeout) {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 				continue
 			}
 
 			ms := float64(time.Since(start).Microseconds()) / 1000.0
 			successes = append(successes, ms)
-			consecFail = 0
 		}
 
 		if len(successes) == 0 {

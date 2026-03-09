@@ -22,30 +22,73 @@ func queryRaw(resolver, domain string, qtype uint16, timeout time.Duration) (*dn
 	c.Net = "udp"
 	c.Timeout = timeout
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// Use a deadline so all retries share a generous overall budget
+	deadline := time.Now().Add(timeout * 2)
 
+	remaining := func() time.Duration {
+		d := time.Until(deadline)
+		if d < 500*time.Millisecond {
+			return 500 * time.Millisecond
+		}
+		return d
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), remaining())
 	r, _, err := c.ExchangeContext(ctx, m, addr)
+	cancel()
 
-	// If EDNS0 caused FORMERR, retry without it
-	if err == nil && r != nil && r.Rcode == dns.RcodeFormatError {
-		m.Extra = nil // strip EDNS0 OPT record
-		r, _, err = c.ExchangeContext(ctx, m, addr)
+	// ednsRetry strips the EDNS0 OPT record and retries the query.
+	// Returns true if the retry produced a better response.
+	ednsRetry := func() bool {
+		savedExtra := m.Extra
+		m.Extra = nil
+		ctx, cancel = context.WithTimeout(context.Background(), remaining())
+		r2, _, err2 := c.ExchangeContext(ctx, m, addr)
+		cancel()
+		if err2 == nil && r2 != nil {
+			r, err = r2, nil
+			return true // EDNS0 was the problem; keep it stripped
+		}
+		m.Extra = savedExtra // retry didn't help; restore
+		return false
+	}
+
+	// If EDNS0 caused an error response, retry without it.
+	// Some servers (e.g. dnstm) return NXDOMAIN instead of FORMERR
+	// when they don't understand the OPT record.
+	if err == nil && r != nil && r.Rcode != dns.RcodeSuccess {
+		ednsRetry()
 	}
 
 	// If UDP failed entirely, try TCP before giving up
 	if err != nil || r == nil {
 		c.Net = "tcp"
+		ctx, cancel = context.WithTimeout(context.Background(), remaining())
 		r, _, err = c.ExchangeContext(ctx, m, addr)
+		cancel()
 		if err != nil || r == nil {
-			return nil, false
+			// TCP with EDNS0 also failed; last resort: TCP without EDNS0
+			m.Extra = nil
+			ctx, cancel = context.WithTimeout(context.Background(), remaining())
+			r, _, err = c.ExchangeContext(ctx, m, addr)
+			cancel()
+			if err != nil || r == nil {
+				return nil, false
+			}
+		}
+		// TCP succeeded but got error Rcode; try without EDNS0
+		// Skip if EDNS0 was already stripped (m.Extra is nil from line 71)
+		if r != nil && r.Rcode != dns.RcodeSuccess && len(m.Extra) > 0 {
+			ednsRetry()
 		}
 	}
 
 	// Retry over TCP if response was truncated
 	if r.Truncated {
 		c.Net = "tcp"
+		ctx, cancel = context.WithTimeout(context.Background(), remaining())
 		r, _, err = c.ExchangeContext(ctx, m, addr)
+		cancel()
 		if err != nil || r == nil {
 			return nil, false
 		}

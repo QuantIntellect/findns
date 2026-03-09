@@ -24,16 +24,26 @@ func loadText(path string) ([]string, error) {
 	defer f.Close()
 
 	var entries []string
-	var skipped, cidrCount int
+	seen := make(map[string]struct{})
+	var skipped, dupes, cidrCount int
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// Strip inline comments
+		if idx := strings.Index(line, " #"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
 		// Accept DoH URLs (https://...)
 		if strings.HasPrefix(line, "https://") {
-			entries = append(entries, line)
+			if _, ok := seen[line]; !ok {
+				seen[line] = struct{}{}
+				entries = append(entries, line)
+			} else {
+				dupes++
+			}
 			continue
 		}
 		// Try CIDR notation (e.g. 1.2.3.0/24)
@@ -41,7 +51,14 @@ func loadText(path string) ([]string, error) {
 			ips, err := expandCIDR(line)
 			if err == nil {
 				cidrCount++
-				entries = append(entries, ips...)
+				for _, cip := range ips {
+					if _, ok := seen[cip]; !ok {
+						seen[cip] = struct{}{}
+						entries = append(entries, cip)
+					} else {
+						dupes++
+					}
+				}
 				continue
 			}
 		}
@@ -54,6 +71,11 @@ func loadText(path string) ([]string, error) {
 			skipped++
 			continue
 		}
+		if _, ok := seen[ip]; ok {
+			dupes++
+			continue
+		}
+		seen[ip] = struct{}{}
 		entries = append(entries, ip)
 	}
 	if err := sc.Err(); err != nil {
@@ -64,6 +86,9 @@ func loadText(path string) ([]string, error) {
 	}
 	if skipped > 0 {
 		fmt.Fprintf(os.Stderr, "input: skipped %d invalid entries\n", skipped)
+	}
+	if dupes > 0 {
+		fmt.Fprintf(os.Stderr, "input: removed %d duplicate entries\n", dupes)
 	}
 	if len(entries) > 100000 {
 		fmt.Fprintf(os.Stderr, "warning: %d IPs is a lot — consider using smaller CIDR ranges or filtering first\n", len(entries))

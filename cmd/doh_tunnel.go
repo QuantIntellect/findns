@@ -20,7 +20,7 @@ var dohTunnelCmd = &cobra.Command{
 func init() {
 	dohTunnelCmd.Flags().String("domain", "", "tunnel domain to check NS for")
 	dohTunnelCmd.MarkFlagRequired("domain")
-	dohResolveCmd.AddCommand(dohTunnelCmd)
+	dohCmd.AddCommand(dohTunnelCmd)
 }
 
 func runDoHTunnel(cmd *cobra.Command, args []string) error {

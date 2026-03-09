@@ -22,7 +22,7 @@ func randLabel(n int) string {
 // Hijacking resolvers return NOERROR with spoofed answers instead.
 func NXDomainCheck(count int) CheckFunc {
 	return func(ip string, timeout time.Duration) (bool, Metrics) {
-		nxCount := 0
+		var nxCount, hijackCount int
 
 		for i := 0; i < count; i++ {
 			fqdn := fmt.Sprintf("nxd-%s.invalid", randLabel(12))
@@ -42,14 +42,15 @@ func NXDomainCheck(count int) CheckFunc {
 
 			if r.Rcode == dns.RcodeNameError {
 				nxCount++
+			} else if r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0 {
+				hijackCount++
 			}
-			// NOERROR with answers = hijack
 		}
 
 		ok := nxCount >= max(1, count*3/4)
 		if !ok {
-			return false, nil
+			return false, Metrics{"nxdomain_ok": float64(nxCount), "hijack": float64(hijackCount)}
 		}
-		return true, Metrics{"nxdomain_ok": float64(nxCount), "hijack": 0}
+		return true, Metrics{"nxdomain_ok": float64(nxCount), "hijack": float64(hijackCount)}
 	}
 }

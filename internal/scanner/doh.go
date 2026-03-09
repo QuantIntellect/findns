@@ -14,9 +14,12 @@ import (
 
 var dohHTTPClient = &http.Client{
 	Transport: &http.Transport{
-		TLSClientConfig:     &tls.Config{InsecureSkipVerify: false},
-		MaxIdleConnsPerHost: 2,
-		IdleConnTimeout:     30 * time.Second,
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
+		MaxIdleConnsPerHost:   10,
+		MaxConnsPerHost:       10,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:  10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
 	},
 }
 
@@ -114,19 +117,12 @@ func QueryDoHNS(resolverURL, domain string, timeout time.Duration) ([]string, bo
 func DoHResolveCheck(domain string, count int) CheckFunc {
 	return func(url string, timeout time.Duration) (bool, Metrics) {
 		var successes []float64
-		var consecFail int
 
 		for i := 0; i < count; i++ {
 			start := time.Now()
 			if QueryDoHA(url, domain, timeout) {
 				ms := float64(time.Since(start).Microseconds()) / 1000.0
 				successes = append(successes, ms)
-				consecFail = 0
-			} else {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 			}
 		}
 
@@ -146,17 +142,12 @@ func DoHResolveCheck(domain string, count int) CheckFunc {
 func DoHTunnelCheck(domain string, count int) CheckFunc {
 	return func(url string, timeout time.Duration) (bool, Metrics) {
 		var successes []float64
-		var consecFail int
 
 		for i := 0; i < count; i++ {
 			start := time.Now()
 
 			hosts, ok := QueryDoHNS(url, domain, timeout)
 			if !ok || len(hosts) == 0 {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 				continue
 			}
 
@@ -166,16 +157,11 @@ func DoHTunnelCheck(domain string, count int) CheckFunc {
 				nsHost = nsHost[:last]
 			}
 			if !QueryDoHA(url, nsHost, timeout) {
-				consecFail++
-				if consecFail >= maxConsecFail {
-					return false, nil
-				}
 				continue
 			}
 
 			ms := float64(time.Since(start).Microseconds()) / 1000.0
 			successes = append(successes, ms)
-			consecFail = 0
 		}
 
 		if len(successes) == 0 {
@@ -211,7 +197,6 @@ func dohDnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan in
 		case <-ctx.Done():
 			return false, nil
 		}
-		defer func() { ports <- port }()
 
 		start := time.Now()
 
@@ -223,12 +208,15 @@ func dohDnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan in
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 		if err := cmd.Start(); err != nil {
+			ports <- port
 			return false, nil
 		}
+		// Kill process and wait for cleanup BEFORE returning port
 		defer func() {
 			cmd.Process.Kill()
 			cmd.Wait()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
+			ports <- port
 		}()
 
 		// Wait for subprocess to start, but cap at 1/3 of timeout

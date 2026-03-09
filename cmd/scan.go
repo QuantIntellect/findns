@@ -39,7 +39,7 @@ var stepDescriptions = map[string]string{
 
 var scanCmd = &cobra.Command{
 	Use:   "scan",
-	Short: "Full scan pipeline: ping -> resolve -> nxdomain -> tunnel -> e2e",
+	Short: "Full scan pipeline: ping -> resolve -> nxdomain -> tunnel -> e2e (use --edns to add EDNS check)",
 	Long: `Run a complete resolver scan with all checks in sequence.
 This is the recommended way to find working resolvers for DNS tunneling.
 
@@ -63,6 +63,7 @@ func init() {
 	scanCmd.Flags().Bool("doh", false, "scan DoH resolvers instead of UDP")
 	scanCmd.Flags().Bool("skip-ping", false, "skip ICMP ping step")
 	scanCmd.Flags().Bool("skip-nxdomain", false, "skip NXDOMAIN hijack check")
+	scanCmd.Flags().Bool("edns", false, "include EDNS payload size check (filters resolvers that don't support EDNS)")
 	scanCmd.Flags().Int("top", 10, "number of top results to display")
 	rootCmd.AddCommand(scanCmd)
 }
@@ -76,6 +77,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	dohMode, _ := cmd.Flags().GetBool("doh")
 	skipPing, _ := cmd.Flags().GetBool("skip-ping")
 	skipNXD, _ := cmd.Flags().GetBool("skip-nxdomain")
+	ednsMode, _ := cmd.Flags().GetBool("edns")
 	topN, _ := cmd.Flags().GetInt("top")
 
 	if outputFile == "" {
@@ -153,10 +155,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 			})
 		}
 		if domain != "" {
-			steps = append(steps, scanner.Step{
-				Name: "edns", Timeout: dur,
-				Check: scanner.EDNSCheck(domain, count), SortBy: "edns_max",
-			})
+			if ednsMode {
+				steps = append(steps, scanner.Step{
+					Name: "edns", Timeout: dur,
+					Check: scanner.EDNSCheck(domain, count), SortBy: "edns_max",
+				})
+			}
 			steps = append(steps, scanner.Step{
 				Name: "resolve/tunnel", Timeout: dur,
 				Check: scanner.TunnelCheck(domain, count), SortBy: "resolve_ms",
@@ -320,9 +324,11 @@ func printSummary(report scanner.ChainReport, topN int, totalTime time.Duration,
 				switch step.Name {
 				case "resolve/tunnel", "doh/resolve/tunnel":
 					fmt.Fprintf(w, "\n  %s\u26a0 Hint: resolve/tunnel had 0%% pass rate.%s\n", colorYellow, colorReset)
-					fmt.Fprintf(w, "  %sThis usually means your tunnel domain's NS delegation is not set up correctly.%s\n", colorDim, colorReset)
-					fmt.Fprintf(w, "  %sVerify with: nslookup -type=NS <your-domain> 8.8.8.8%s\n", colorDim, colorReset)
-					fmt.Fprintf(w, "  %sYou need NS + glue A records pointing to your DNSTT server.%s\n", colorDim, colorReset)
+					fmt.Fprintf(w, "  %sPossible causes:%s\n", colorDim, colorReset)
+					fmt.Fprintf(w, "  %s  1. NS delegation not set up: nslookup -type=NS <your-domain> 8.8.8.8%s\n", colorDim, colorReset)
+					fmt.Fprintf(w, "  %s     You need NS + glue A records pointing to your server.%s\n", colorDim, colorReset)
+					fmt.Fprintf(w, "  %s  2. Server returns NXDOMAIN: delegation works but dnstt-server/dnstm is misconfigured.%s\n", colorDim, colorReset)
+					fmt.Fprintf(w, "  %s     Check: cat /etc/dnstm/config.json  |  journalctl -u dnstm-dnsrouter -n 20%s\n", colorDim, colorReset)
 					fmt.Fprintf(w, "  %sSee: https://github.com/SamNet-dev/findns/blob/main/GUIDE.md#-تنظیم-دامنه-تانل-مهم--قبل-از-اسکن-بخوانید%s\n", colorDim, colorReset)
 				case "ping":
 					fmt.Fprintf(w, "\n  %s\u26a0 Hint: ping had 0%% pass rate. Try --skip-ping (ICMP may be blocked).%s\n", colorYellow, colorReset)

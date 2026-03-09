@@ -43,7 +43,6 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 		case <-ctx.Done():
 			return false, nil
 		}
-		defer func() { ports <- port }()
 
 		start := time.Now()
 
@@ -55,13 +54,15 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 		if err := cmd.Start(); err != nil {
+			ports <- port
 			return false, nil
 		}
+		// Kill process and wait for cleanup BEFORE returning port
 		defer func() {
 			cmd.Process.Kill()
 			cmd.Wait()
-			// Brief pause so OS can release the port before it's reused
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
+			ports <- port
 		}()
 
 		// Wait for subprocess to start, but cap at 1/3 of timeout
@@ -103,7 +104,6 @@ func slipstreamCheck(bin, domain, certPath, testURL, proxyAuth string, ports cha
 		case <-ctx.Done():
 			return false, nil
 		}
-		defer func() { ports <- port }()
 
 		start := time.Now()
 
@@ -119,12 +119,15 @@ func slipstreamCheck(bin, domain, certPath, testURL, proxyAuth string, ports cha
 		cmd.Stdout = io.Discard
 		cmd.Stderr = io.Discard
 		if err := cmd.Start(); err != nil {
+			ports <- port
 			return false, nil
 		}
+		// Kill process and wait for cleanup BEFORE returning port
 		defer func() {
 			cmd.Process.Kill()
 			cmd.Wait()
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
+			ports <- port
 		}()
 
 		// Wait for subprocess to start, but cap at 1/3 of timeout
