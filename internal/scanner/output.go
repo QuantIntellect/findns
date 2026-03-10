@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,15 @@ func WriteReport(results []Result, path string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+func WriteIPList(passed []IPRecord, path string) error {
+	var b strings.Builder
+	for _, r := range passed {
+		b.WriteString(r.IP)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(b.String()), 0644)
 }
 
 func PrintStats(mode string, results []Result, duration time.Duration) {

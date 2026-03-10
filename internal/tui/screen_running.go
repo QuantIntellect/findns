@@ -166,6 +166,11 @@ func launchScan(ctx context.Context, ips []string, cfg ScanConfig, steps []scann
 		var writeErr error
 		if cfg.OutputFile != "" {
 			writeErr = scanner.WriteChainReport(report, cfg.OutputFile)
+			// Also write plain IP list alongside JSON
+			if writeErr == nil {
+				ipFile := strings.TrimSuffix(cfg.OutputFile, ".json") + "_ips.txt"
+				_ = scanner.WriteIPList(report.Passed, ipFile)
+			}
 		}
 		doneCh <- scanDoneMsg{report: report, elapsed: elapsed, writeErr: writeErr}
 	}()

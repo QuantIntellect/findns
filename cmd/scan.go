@@ -64,6 +64,7 @@ func init() {
 	scanCmd.Flags().Bool("skip-ping", false, "skip ICMP ping step")
 	scanCmd.Flags().Bool("skip-nxdomain", false, "skip NXDOMAIN hijack check")
 	scanCmd.Flags().Bool("edns", false, "include EDNS payload size check (filters resolvers that don't support EDNS)")
+	scanCmd.Flags().String("output-ips", "", "write plain IP list (one per line) to this file")
 	scanCmd.Flags().Int("top", 10, "number of top results to display")
 	rootCmd.AddCommand(scanCmd)
 }
@@ -79,6 +80,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	skipNXD, _ := cmd.Flags().GetBool("skip-nxdomain")
 	ednsMode, _ := cmd.Flags().GetBool("edns")
 	topN, _ := cmd.Flags().GetInt("top")
+	outputIPs, _ := cmd.Flags().GetString("output-ips")
 
 	if outputFile == "" {
 		return fmt.Errorf("--output / -o flag is required")
@@ -201,7 +203,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	printSummary(report, topN, totalTime, domain)
 
-	return scanner.WriteChainReport(report, outputFile)
+	if err := scanner.WriteChainReport(report, outputFile); err != nil {
+		return err
+	}
+	if outputIPs != "" {
+		if err := scanner.WriteIPList(report.Passed, outputIPs); err != nil {
+			return fmt.Errorf("writing IP list: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  %s✔ IP list written to %s (%d IPs)%s\n", colorGreen, outputIPs, len(report.Passed), colorReset)
+	}
+	return nil
 }
 
 func pad(s string, width int) string {
