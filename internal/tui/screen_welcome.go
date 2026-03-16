@@ -151,6 +151,12 @@ func parseCLIFlags(m *Model, raw string) {
 				m.configInputs[txtEDNSSize].SetValue(next)
 				i++
 			}
+		case "--query-size":
+			if next != "" {
+				fmt.Sscanf(next, "%d", &m.config.QuerySize)
+				m.configInputs[txtQuerySize].SetValue(next)
+				i++
+			}
 		case "--e2e":
 			m.config.E2E = true
 		case "--doh":

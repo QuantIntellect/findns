@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -202,11 +203,15 @@ func dohDnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan in
 		start := time.Now()
 
 		var stderrBuf bytes.Buffer
-		cmd := execCommandContext(ctx, bin,
+		args := []string{
 			"-doh", url,
 			"-pubkey", pubkey,
-			domain,
-			fmt.Sprintf("127.0.0.1:%d", port))
+		}
+		if DnsttMTU > 0 {
+			args = append(args, "-mtu", strconv.Itoa(DnsttMTU))
+		}
+		args = append(args, domain, fmt.Sprintf("127.0.0.1:%d", port))
+		cmd := execCommandContext(ctx, bin, args...)
 		cmd.Stdout = io.Discard
 		cmd.Stderr = &stderrBuf
 		if err := cmd.Start(); err != nil {

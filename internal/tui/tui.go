@@ -31,6 +31,7 @@ type ScanConfig struct {
 	Count        int
 	E2ETimeout   int
 	EDNSSize     int
+	QuerySize    int
 	SkipPing     bool
 	SkipNXDomain bool
 	EDNS         bool
@@ -125,6 +126,7 @@ func NewModelWithConfig(cfg ScanConfig) Model {
 	inputs[txtTimeout].SetValue(fmt.Sprintf("%d", cfg.Timeout))
 	inputs[txtCount].SetValue(fmt.Sprintf("%d", cfg.Count))
 	inputs[txtEDNSSize].SetValue(fmt.Sprintf("%d", cfg.EDNSSize))
+	inputs[txtQuerySize].SetValue(fmt.Sprintf("%d", cfg.QuerySize))
 	inputs[txtE2ETimeout].SetValue(fmt.Sprintf("%d", cfg.E2ETimeout))
 
 	return Model{

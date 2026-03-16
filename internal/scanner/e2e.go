@@ -17,6 +17,10 @@ import (
 
 const defaultTestURL = "http://httpbin.org/ip"
 
+// DnsttMTU caps the upstream DNS query payload size (dnstt-client -mtu flag).
+// 0 means use dnstt-client's default (maximum capacity).
+var DnsttMTU int
+
 func PortPool(base, count int) chan int {
 	ch := make(chan int, count)
 	for i := 0; i < count; i++ {
@@ -93,11 +97,15 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 		start := time.Now()
 
 		var stderrBuf bytes.Buffer
-		cmd := execCommandContext(ctx, bin,
+		args := []string{
 			"-udp", net.JoinHostPort(ip, "53"),
 			"-pubkey", pubkey,
-			domain,
-			fmt.Sprintf("127.0.0.1:%d", port))
+		}
+		if DnsttMTU > 0 {
+			args = append(args, "-mtu", strconv.Itoa(DnsttMTU))
+		}
+		args = append(args, domain, fmt.Sprintf("127.0.0.1:%d", port))
+		cmd := execCommandContext(ctx, bin, args...)
 		cmd.Stdout = io.Discard
 		cmd.Stderr = &stderrBuf
 		if err := cmd.Start(); err != nil {

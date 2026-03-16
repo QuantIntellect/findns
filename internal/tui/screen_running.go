@@ -138,6 +138,8 @@ func launchScan(ctx context.Context, ips []string, cfg ScanConfig, steps []scann
 	if cfg.EDNSSize > 0 {
 		scanner.EDNSBufSize = uint16(cfg.EDNSSize)
 	}
+	// Apply query size cap (dnstt-client MTU)
+	scanner.DnsttMTU = cfg.QuerySize
 
 	if len(steps) == 0 {
 		doneCh <- scanDoneMsg{err: fmt.Errorf("no scan steps configured")}

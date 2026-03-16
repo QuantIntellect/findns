@@ -23,6 +23,7 @@ const (
 	txtTimeout
 	txtCount
 	txtEDNSSize
+	txtQuerySize
 	txtE2ETimeout
 	numTextInputs
 )
@@ -40,6 +41,7 @@ const (
 	fSkipNXD
 	fEDNS
 	fEDNSSize
+	fQuerySize
 	fE2E       // toggle: enables/disables e2e section
 	fPubkey    // e2e fields below
 	fCert
@@ -69,6 +71,7 @@ var allFields = []fieldDef{
 	{fSkipNXD, "Skip NXDOMAIN", "", "Skip NXDOMAIN hijack detection. Checks if resolver fakes responses.", -1},
 	{fEDNS, "EDNS Check", "", "Test EDNS0 payload size support. Important for DNS tunneling throughput.", -1},
 	{fEDNSSize, "EDNS Size", "", "EDNS0 UDP payload size in bytes. Larger = better throughput, lower if fragmented.", txtEDNSSize},
+	{fQuerySize, "Query Size", "", "Cap upstream DNS query payload size (dnstt -mtu). 0 = max. Try 50-80 if e2e fails on filtered networks.", txtQuerySize},
 	{fE2E, "E2E Testing", "E2E (end-to-end tunnel test)", "Enable end-to-end tunnel tests. Requires tunnel client binaries.", -1},
 	{fPubkey, "Pubkey", "", "Hex public key for dnstt. Requires dnstt-client in PATH.", txtPubkey},
 	{fCert, "Cert", "", "Path to slipstream TLS cert. Requires slipstream-client in PATH.", txtCert},
@@ -142,6 +145,11 @@ func initConfigInputs() []textinput.Model {
 	inputs[txtEDNSSize].Placeholder = "1232"
 	inputs[txtEDNSSize].SetValue("1232")
 	inputs[txtEDNSSize].CharLimit = 4
+
+	inputs[txtQuerySize] = textinput.New()
+	inputs[txtQuerySize].Placeholder = "0 (max)"
+	inputs[txtQuerySize].SetValue("0")
+	inputs[txtQuerySize].CharLimit = 4
 
 	inputs[txtE2ETimeout] = textinput.New()
 	inputs[txtE2ETimeout].Placeholder = "15"
@@ -285,6 +293,9 @@ func applyConfig(m Model) (Model, tea.Cmd) {
 	}
 	if v, err := strconv.Atoi(m.configInputs[txtEDNSSize].Value()); err == nil && v > 0 {
 		m.config.EDNSSize = v
+	}
+	if v, err := strconv.Atoi(m.configInputs[txtQuerySize].Value()); err == nil && v >= 0 {
+		m.config.QuerySize = v
 	}
 	if v, err := strconv.Atoi(m.configInputs[txtE2ETimeout].Value()); err == nil && v > 0 {
 		m.config.E2ETimeout = v
