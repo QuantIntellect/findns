@@ -13,6 +13,7 @@ type Step struct {
 	Timeout time.Duration
 	Check   CheckFunc
 	SortBy  string
+	Limit   int // if > 0, only pass top N results to the next step
 }
 
 type StepResult struct {
@@ -115,6 +116,11 @@ func runChain(ctx context.Context, ips []string, workers int, steps []Step, newP
 		if !quiet {
 			fmt.Fprintf(os.Stderr, "  %-18s %d tested | %d pass | %d fail | %.1fs\n",
 				step.Name+":", sr.Tested, sr.Passed, sr.Failed, sr.Seconds)
+		}
+
+		// Apply limit: only pass top N to next step
+		if step.Limit > 0 && len(nextIPs) > step.Limit {
+			nextIPs = nextIPs[:step.Limit]
 		}
 
 		current = nextIPs

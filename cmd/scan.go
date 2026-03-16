@@ -31,6 +31,7 @@ var stepDescriptions = map[string]string{
 	"nxdomain":           "Detecting DNS hijacking on non-existent domains",
 	"edns":               "Testing EDNS0 support and buffer sizes",
 	"resolve/tunnel":     "Verifying resolvers forward queries to your tunnel domain",
+	"e2e/socks":          "Quick SOCKS handshake test via DNSTT",
 	"e2e/dnstt":          "Full tunnel connectivity test via DNSTT",
 	"e2e/slipstream":     "Full tunnel connectivity test via Slipstream",
 	"doh/resolve":        "Checking DoH resolver connectivity",
@@ -69,6 +70,7 @@ func init() {
 	scanCmd.Flags().Int("query-size", 0, "cap dnstt-client upstream query size in bytes (0 = max, try 50-80 if e2e fails)")
 	scanCmd.Flags().StringSlice("cidr", nil, "CIDR range(s) to scan (e.g. --cidr 5.52.0.0/16)")
 	scanCmd.Flags().String("output-ips", "", "write plain IP list (one per line) to this file")
+	scanCmd.Flags().Int("e2e-top", 100, "number of top SOCKS-passing resolvers to full-verify with curl")
 	scanCmd.Flags().Int("top", 10, "number of top results to display")
 	rootCmd.AddCommand(scanCmd)
 }
@@ -84,6 +86,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	skipNXD, _ := cmd.Flags().GetBool("skip-nxdomain")
 	ednsMode, _ := cmd.Flags().GetBool("edns")
 	topN, _ := cmd.Flags().GetInt("top")
+	e2eTop, _ := cmd.Flags().GetInt("e2e-top")
 	outputIPs, _ := cmd.Flags().GetString("output-ips")
 
 	ednsSize, _ := cmd.Flags().GetInt("edns-size")
@@ -227,6 +230,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 			})
 		}
 		if domain != "" && pubkey != "" {
+			// Phase 1: fast SOCKS-only check on ALL resolvers (Noise handshake only)
+			steps = append(steps, scanner.Step{
+				Name: "e2e/socks", Timeout: time.Duration(e2eTimeout) * time.Second,
+				Check: scanner.DnsttSOCKSCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "socks_ms",
+				Limit: e2eTop,
+			})
+			// Phase 2: full curl verification on top N from Phase 1
 			steps = append(steps, scanner.Step{
 				Name: "e2e/dnstt", Timeout: time.Duration(e2eTimeout) * time.Second,
 				Check: scanner.DnsttCheckBin(dnsttBin, domain, pubkey, testURL, proxyAuth, ports), SortBy: "e2e_ms",

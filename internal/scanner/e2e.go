@@ -254,6 +254,109 @@ func slipstreamCheck(bin, domain, certPath, testURL, proxyAuth string, ports cha
 	}
 }
 
+// DnsttSOCKSCheckBin is a fast e2e check: it only verifies that dnstt-client
+// opens the SOCKS port (i.e. the Noise handshake completes). No curl/HTTP test.
+// This is much faster than the full e2e check and suitable for testing all resolvers.
+func DnsttSOCKSCheckBin(bin, domain, pubkey string, ports chan int) CheckFunc {
+	var diagOnce atomic.Bool
+
+	return func(ip string, timeout time.Duration) (bool, Metrics) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		var port int
+		select {
+		case port = <-ports:
+		case <-ctx.Done():
+			return false, nil
+		}
+
+		start := time.Now()
+
+		var stderrBuf bytes.Buffer
+		args := []string{
+			"-udp", net.JoinHostPort(ip, "53"),
+			"-pubkey", pubkey,
+		}
+		if DnsttMTU > 0 {
+			args = append(args, "-mtu", strconv.Itoa(DnsttMTU))
+		}
+		args = append(args, domain, fmt.Sprintf("127.0.0.1:%d", port))
+		cmd := execCommandContext(ctx, bin, args...)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Start(); err != nil {
+			ports <- port
+			if diagOnce.CompareAndSwap(false, true) {
+				setDiag("e2e/socks: cannot start %s: %v", bin, err)
+			}
+			return false, nil
+		}
+
+		exited := make(chan struct{})
+		go func() {
+			cmd.Wait()
+			close(exited)
+		}()
+
+		defer func() {
+			cmd.Process.Kill()
+			select {
+			case <-exited:
+			case <-time.After(2 * time.Second):
+			}
+			time.Sleep(300 * time.Millisecond)
+			ports <- port
+		}()
+
+		// Just wait for SOCKS port to accept a TCP connection
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		for {
+			select {
+			case <-ctx.Done():
+				if diagOnce.CompareAndSwap(false, true) {
+					cmd.Process.Kill()
+					select {
+					case <-exited:
+					case <-time.After(2 * time.Second):
+					}
+					stderr := strings.TrimSpace(stderrBuf.String())
+					if stderr != "" {
+						setDiag("e2e/socks first failure (ip=%s): dnstt-client stderr: %s", ip, truncate(stderr, 300))
+					} else {
+						setDiag("e2e/socks first failure (ip=%s): SOCKS port did not open within %v", ip, timeout)
+					}
+				}
+				return false, nil
+			case <-exited:
+				if diagOnce.CompareAndSwap(false, true) {
+					stderr := strings.TrimSpace(stderrBuf.String())
+					if stderr != "" {
+						setDiag("e2e/socks first failure (ip=%s): dnstt-client exited early: %s", ip, truncate(stderr, 300))
+					} else {
+						setDiag("e2e/socks first failure (ip=%s): dnstt-client exited early with no stderr", ip)
+					}
+				}
+				return false, nil
+			default:
+			}
+			conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				ms := roundMs(float64(time.Since(start).Microseconds()) / 1000.0)
+				return true, Metrics{"socks_ms": ms}
+			}
+			select {
+			case <-ctx.Done():
+				return false, nil
+			case <-exited:
+				return false, nil
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+	}
+}
+
 func nullDevice() string {
 	if runtime.GOOS == "windows" {
 		return "NUL"
