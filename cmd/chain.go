@@ -100,7 +100,7 @@ func buildStep(cfg stepConfig, defaultTimeout, defaultCount int, ports chan int,
 		if !ok || pubkey == "" {
 			return scanner.Step{}, fmt.Errorf("step %q: missing required param 'pubkey'", cfg.name)
 		}
-		return scanner.Step{Name: "e2e/dnstt", Timeout: dur, Check: scanner.DnsttSOCKSCheckBin(binPaths["dnstt-client"], domain, pubkey, ports), SortBy: "socks_ms"}, nil
+		return scanner.Step{Name: "e2e/dnstt", Timeout: dur, Check: scanner.DnsttCheckBin(binPaths["dnstt-client"], domain, pubkey, ports), SortBy: "socks_ms"}, nil
 
 	case "e2e/slipstream":
 		domain, ok := cfg.params["domain"]

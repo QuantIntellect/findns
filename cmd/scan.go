@@ -68,7 +68,9 @@ func init() {
 	scanCmd.Flags().StringSlice("cidr", nil, "CIDR range(s) to scan (e.g. --cidr 5.52.0.0/16)")
 	scanCmd.Flags().String("cidr-file", "", "text file with one CIDR range per line to scan")
 	scanCmd.Flags().String("output-ips", "", "write plain IP list (one per line) to this file")
-scanCmd.Flags().Int("top", 10, "number of top results to display")
+	scanCmd.Flags().Int("top", 10, "number of top results to display")
+	scanCmd.Flags().Int("batch", 0, "scan N resolvers at a time, saving after each batch (0 = all at once)")
+	scanCmd.Flags().Bool("resume", false, "skip IPs already in the output file (resume a previous scan)")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -81,7 +83,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	skipNXD, _ := cmd.Flags().GetBool("skip-nxdomain")
 	ednsMode, _ := cmd.Flags().GetBool("edns")
 	topN, _ := cmd.Flags().GetInt("top")
-outputIPs, _ := cmd.Flags().GetString("output-ips")
+	outputIPs, _ := cmd.Flags().GetString("output-ips")
+	batchSize, _ := cmd.Flags().GetInt("batch")
+	resume, _ := cmd.Flags().GetBool("resume")
 
 	ednsSize, _ := cmd.Flags().GetInt("edns-size")
 	querySize, _ := cmd.Flags().GetInt("query-size")
@@ -243,7 +247,7 @@ outputIPs, _ := cmd.Flags().GetString("output-ips")
 			// handshake succeeds — proving bidirectional tunnel data flow.
 			steps = append(steps, scanner.Step{
 				Name: "e2e/dnstt", Timeout: time.Duration(e2eTimeout) * time.Second,
-				Check: scanner.DnsttSOCKSCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "socks_ms",
+				Check: scanner.DnsttCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "socks_ms",
 			})
 		}
 		if domain != "" && certPath != "" {
@@ -258,6 +262,52 @@ outputIPs, _ := cmd.Flags().GetString("output-ips")
 		return fmt.Errorf("no scan steps configured")
 	}
 
+	// --resume: load existing results and skip already-scanned IPs
+	var allPassed []scanner.IPRecord
+	if resume {
+		if existing, err := scanner.LoadChainReport(outputFile); err == nil {
+			seen := make(map[string]bool, len(existing.Passed)+len(existing.Failed))
+			for _, r := range existing.Passed {
+				seen[r.IP] = true
+				allPassed = append(allPassed, r)
+			}
+			for _, r := range existing.Failed {
+				seen[r.IP] = true
+			}
+			filtered := ips[:0]
+			for _, ip := range ips {
+				if !seen[ip] {
+					filtered = append(filtered, ip)
+				}
+			}
+			skipped := len(ips) - len(filtered)
+			ips = filtered
+			fmt.Fprintf(os.Stderr, "  %s✔ Resume: skipping %d already-scanned IPs, %d remaining%s\n",
+				colorGreen, skipped, len(ips), colorReset)
+			if len(ips) == 0 {
+				fmt.Fprintf(os.Stderr, "  %s✔ All IPs already scanned%s\n", colorGreen, colorReset)
+				return nil
+			}
+		}
+	}
+
+	if outputIPs == "" {
+		outputIPs = strings.TrimSuffix(outputFile, ".json") + "_ips.txt"
+	}
+
+	// saveResults writes current results to JSON + IP list
+	saveResults := func(report scanner.ChainReport) {
+		// Merge with previously loaded results from --resume
+		merged := report
+		if len(allPassed) > 0 {
+			merged.Passed = append(allPassed, report.Passed...)
+		}
+		scanner.WriteChainReport(merged, outputFile)
+		if len(merged.Passed) > 0 {
+			scanner.WriteIPList(merged.Passed, outputIPs)
+		}
+	}
+
 	printBanner(len(ips), dohMode, domain, steps)
 	printPreFlight(len(ips), domain, dnsttBin, slipstreamBin, steps)
 
@@ -266,6 +316,61 @@ outputIPs, _ := cmd.Flags().GetString("output-ips")
 
 	scanner.ResetE2EDiagnostic()
 	scanStart := time.Now()
+
+	// --batch: split IPs into chunks, save after each batch
+	if batchSize > 0 && len(ips) > batchSize {
+		var combinedReport scanner.ChainReport
+		totalBatches := (len(ips) + batchSize - 1) / batchSize
+		for i := 0; i < len(ips); i += batchSize {
+			if ctx.Err() != nil {
+				break
+			}
+			end := i + batchSize
+			if end > len(ips) {
+				end = len(ips)
+			}
+			batchNum := i/batchSize + 1
+			chunk := ips[i:end]
+			fmt.Fprintf(os.Stderr, "\n  %s━━━ Batch %d/%d (%d IPs) ━━━%s\n\n",
+				colorCyan, batchNum, totalBatches, len(chunk), colorReset)
+
+			report := scanner.RunChainQuietCtx(ctx, chunk, workers, steps,
+				newScanProgressFactory(len(steps), stepDescriptions))
+
+			// Merge into combined report
+			combinedReport.Passed = append(combinedReport.Passed, report.Passed...)
+			combinedReport.Failed = append(combinedReport.Failed, report.Failed...)
+			if len(combinedReport.Steps) == 0 {
+				combinedReport.Steps = report.Steps
+			} else {
+				for j := range combinedReport.Steps {
+					if j < len(report.Steps) {
+						combinedReport.Steps[j].Tested += report.Steps[j].Tested
+						combinedReport.Steps[j].Passed += report.Steps[j].Passed
+						combinedReport.Steps[j].Failed += report.Steps[j].Failed
+						combinedReport.Steps[j].Seconds += report.Steps[j].Seconds
+					}
+				}
+			}
+
+			// Save after each batch
+			saveResults(combinedReport)
+			totalPassed := len(allPassed) + len(combinedReport.Passed)
+			fmt.Fprintf(os.Stderr, "  %s✔ Batch %d done — %d passed so far — saved to %s%s\n",
+				colorGreen, batchNum, totalPassed, outputFile, colorReset)
+		}
+
+		totalTime := time.Since(scanStart)
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "\n  %s⚠ Interrupted — partial results saved to %s%s\n", colorYellow, outputFile, colorReset)
+		}
+		printSummary(combinedReport, topN, totalTime, domain)
+		totalPassed := len(allPassed) + len(combinedReport.Passed)
+		fmt.Fprintf(os.Stderr, "  %s✔ IP list written to %s (%d IPs)%s\n", colorGreen, outputIPs, totalPassed, colorReset)
+		return nil
+	}
+
+	// No batching — scan all at once
 	report := scanner.RunChainQuietCtx(ctx, ips, workers, steps, newScanProgressFactory(len(steps), stepDescriptions))
 	totalTime := time.Since(scanStart)
 
@@ -274,19 +379,11 @@ outputIPs, _ := cmd.Flags().GetString("output-ips")
 	}
 
 	printSummary(report, topN, totalTime, domain)
+	saveResults(report)
 
-	if err := scanner.WriteChainReport(report, outputFile); err != nil {
-		return err
-	}
-	// Auto-generate _ips.txt alongside JSON (same as TUI behavior)
-	if outputIPs == "" && len(report.Passed) > 0 {
-		outputIPs = strings.TrimSuffix(outputFile, ".json") + "_ips.txt"
-	}
-	if outputIPs != "" && len(report.Passed) > 0 {
-		if err := scanner.WriteIPList(report.Passed, outputIPs); err != nil {
-			return fmt.Errorf("writing IP list: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "  %s✔ IP list written to %s (%d IPs)%s\n", colorGreen, outputIPs, len(report.Passed), colorReset)
+	totalPassed := len(allPassed) + len(report.Passed)
+	if totalPassed > 0 {
+		fmt.Fprintf(os.Stderr, "  %s✔ IP list written to %s (%d IPs)%s\n", colorGreen, outputIPs, totalPassed, colorReset)
 	}
 	return nil
 }

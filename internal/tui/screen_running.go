@@ -118,7 +118,7 @@ func buildSteps(cfg ScanConfig) ([]scanner.Step, error) {
 			// carries tunnel traffic bidirectionally. Fast (~2-5s per resolver).
 			steps = append(steps, scanner.Step{
 				Name: "e2e/dnstt", Timeout: e2eDur,
-				Check: scanner.DnsttSOCKSCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, ports), SortBy: "socks_ms",
+				Check: scanner.DnsttCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, ports), SortBy: "socks_ms",
 			})
 		}
 		if cfg.Domain != "" && cfg.Cert != "" {

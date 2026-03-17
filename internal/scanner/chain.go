@@ -165,3 +165,16 @@ func WriteChainReport(report ChainReport, path string) error {
 	}
 	return os.WriteFile(path, data, 0644)
 }
+
+// LoadChainReport reads a previously saved ChainReport from disk.
+func LoadChainReport(path string) (ChainReport, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ChainReport{}, err
+	}
+	var report ChainReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return ChainReport{}, err
+	}
+	return report, nil
+}

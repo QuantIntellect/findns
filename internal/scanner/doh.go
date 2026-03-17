@@ -237,7 +237,7 @@ func dohDnsttCheck(bin, domain, pubkey string, ports chan int) CheckFunc {
 			ports <- port
 		}()
 
-		if !waitAndTestSOCKS5Auth(ctx, port, exited) {
+		if !waitAndTestSOCKS5Connect(ctx, port, exited) {
 			if diagOnce.CompareAndSwap(false, true) {
 				processExitedEarly := false
 				select {
