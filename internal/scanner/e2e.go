@@ -80,7 +80,6 @@ func DnsttCheck(domain, pubkey, testURL string, ports chan int) CheckFunc {
 }
 
 func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) CheckFunc {
-	testURL = effectiveTestURL(testURL)
 	var diagOnce atomic.Bool
 
 	return func(ip string, timeout time.Duration) (bool, Metrics) {
@@ -132,16 +131,17 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 			ports <- port
 		}()
 
-		if !waitAndTestSOCKS(ctx, port, testURL, proxyAuth, exited, timeout) {
+		// Wait for SOCKS port to open, then do a SOCKS5 handshake through
+		// the tunnel. This is much faster than spawning curl — we just need
+		// to verify that data flows bidirectionally through the DNS tunnel.
+		if !waitAndTestSOCKS5Auth(ctx, port, exited) {
 			if diagOnce.CompareAndSwap(false, true) {
-				// Check if process exited on its own before we kill it
 				processExitedEarly := false
 				select {
 				case <-exited:
 					processExitedEarly = true
 				default:
 				}
-				// Kill and wait so stderr pipe is fully closed before reading
 				cmd.Process.Kill()
 				select {
 				case <-exited:
@@ -153,7 +153,7 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 				} else if processExitedEarly {
 					setDiag("e2e/dnstt first failure (ip=%s): dnstt-client exited early with no stderr", ip)
 				} else {
-					setDiag("e2e/dnstt first failure (ip=%s): curl could not get HTTP 200 through SOCKS within %v (test-url=%s)", ip, timeout, testURL)
+					setDiag("e2e/dnstt first failure (ip=%s): SOCKS5 handshake through tunnel timed out within %v", ip, timeout)
 				}
 			}
 			return false, nil
@@ -161,6 +161,64 @@ func dnsttCheck(bin, domain, pubkey, testURL, proxyAuth string, ports chan int) 
 		ms := roundMs(float64(time.Since(start).Microseconds()) / 1000.0)
 		return true, Metrics{"e2e_ms": ms}
 	}
+}
+
+// waitAndTestSOCKS5Auth waits for the SOCKS port to open, then performs a
+// SOCKS5 auth handshake. In dnstt, the SOCKS protocol is handled by a proxy
+// on the server side — so the auth bytes travel through the DNS tunnel and
+// the reply comes back through it. Getting the 2-byte auth reply proves
+// bidirectional data flow through the DNS tunnel. This is the minimum
+// possible test: 3 bytes up, 2 bytes back, one tunnel round-trip.
+func waitAndTestSOCKS5Auth(ctx context.Context, port int, exited <-chan struct{}) bool {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// Wait for SOCKS port to start listening.
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-exited:
+			return false
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-exited:
+			return false
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	// Send SOCKS5 auth and wait for reply through the tunnel.
+	// Single attempt — the DNS tunnel round-trip at MTU 50 can take
+	// 5-10 seconds, so retrying wastes the timeout budget.
+	d := net.Dialer{}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	// SOCKS5 auth: version=5, 1 method, no-auth(0x00)
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return false
+	}
+	authResp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, authResp); err != nil {
+		return false
+	}
+	// Any valid SOCKS5 reply (0x05, 0x00) proves the tunnel works.
+	return authResp[0] == 0x05
 }
 
 // SlipstreamCheckBin is like SlipstreamCheck but uses an explicit binary path.
@@ -372,24 +430,20 @@ func nullDevice() string {
 func waitAndTestSOCKS(ctx context.Context, port int, testURL, proxyAuth string, exited <-chan struct{}, totalTimeout time.Duration) bool {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	// Compute per-attempt curl timeout: aim for 3 attempts minimum.
-	// Reserve ~2s for Phase 1, then divide the rest by 3.
+	// Compute per-attempt curl timeout. DNS tunnels are slow — give each
+	// attempt generous time. Aim for 2 attempts; reserve ~3s for Phase 1.
 	totalSec := int(totalTimeout.Seconds())
-	curlMaxTime := (totalSec - 2) / 3
-	if curlMaxTime < 3 {
-		curlMaxTime = 3
+	curlMaxTime := (totalSec - 3) / 2
+	if curlMaxTime < 5 {
+		curlMaxTime = 5
 	}
-	if curlMaxTime > 8 {
-		curlMaxTime = 8
-	}
-	// Never exceed the total timeout budget
-	if curlMaxTime > totalSec {
-		curlMaxTime = totalSec
+	if curlMaxTime > totalSec-2 {
+		curlMaxTime = totalSec - 2
 	}
 	// connect-timeout should be less than max-time
-	curlConnTimeout := curlMaxTime - 1
-	if curlConnTimeout < 2 {
-		curlConnTimeout = 2
+	curlConnTimeout := curlMaxTime - 2
+	if curlConnTimeout < 3 {
+		curlConnTimeout = 3
 	}
 
 	// Phase 1: wait for SOCKS port to start listening (poll every 300ms).

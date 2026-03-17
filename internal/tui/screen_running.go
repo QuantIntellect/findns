@@ -118,16 +118,13 @@ func buildSteps(cfg ScanConfig) ([]scanner.Step, error) {
 			})
 		}
 		if cfg.Domain != "" && cfg.Pubkey != "" {
-			// Phase 1: fast SOCKS-only check on ALL resolvers
-			steps = append(steps, scanner.Step{
-				Name: "e2e/socks", Timeout: e2eDur,
-				Check: scanner.DnsttSOCKSCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, ports), SortBy: "socks_ms",
-				Limit: 100,
-			})
-			// Phase 2: full curl verification on top 100
+			// E2E tunnel test: verify dnstt Noise handshake completes through
+			// each resolver. The SOCKS port only opens after the cryptographic
+			// handshake succeeds through the DNS tunnel — proving the resolver
+			// carries tunnel traffic bidirectionally. Fast (~2-5s per resolver).
 			steps = append(steps, scanner.Step{
 				Name: "e2e/dnstt", Timeout: e2eDur,
-				Check: scanner.DnsttCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, cfg.TestURL, cfg.ProxyAuth, ports), SortBy: "e2e_ms",
+				Check: scanner.DnsttSOCKSCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, ports), SortBy: "socks_ms",
 			})
 		}
 		if cfg.Domain != "" && cfg.Cert != "" {

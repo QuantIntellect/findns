@@ -100,12 +100,7 @@ func buildStep(cfg stepConfig, defaultTimeout, defaultCount int, ports chan int,
 		if !ok || pubkey == "" {
 			return scanner.Step{}, fmt.Errorf("step %q: missing required param 'pubkey'", cfg.name)
 		}
-		testURL := "http://httpbin.org/ip"
-		if v, ok := cfg.params["test-url"]; ok {
-			testURL = v
-		}
-		proxyAuth := cfg.params["proxy-auth"]
-		return scanner.Step{Name: "e2e/dnstt", Timeout: dur, Check: scanner.DnsttCheckBin(binPaths["dnstt-client"], domain, pubkey, testURL, proxyAuth, ports), SortBy: "e2e_ms"}, nil
+		return scanner.Step{Name: "e2e/dnstt", Timeout: dur, Check: scanner.DnsttSOCKSCheckBin(binPaths["dnstt-client"], domain, pubkey, ports), SortBy: "socks_ms"}, nil
 
 	case "e2e/slipstream":
 		domain, ok := cfg.params["domain"]
