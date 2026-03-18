@@ -15,7 +15,7 @@ Supports both **UDP** and **DoH (DNS-over-HTTPS)** resolvers with end-to-end tun
 | Feature | Description |
 |---------|-------------|
 | 🔄 **UDP + DoH Scanning** | Test both plain DNS (port 53) and DNS-over-HTTPS (port 443) |
-| 🔗 **Full Scan Pipeline** | Ping → Resolve → NXDOMAIN → EDNS → Tunnel → E2E in one command |
+| 🔗 **Full Scan Pipeline** | Ping → Resolve → NXDOMAIN → EDNS → Tunnel → E2E → Throughput in one command |
 | 🛡️ **Hijack Detection** | Detect DNS resolvers that inject fake answers (NXDOMAIN check) |
 | 📏 **EDNS Payload Testing** | Find resolvers that support large DNS payloads (faster tunnels) |
 | 🚇 **E2E Tunnel Verification** | Actually launches DNSTT/Slipstream clients to verify real connectivity |
@@ -24,6 +24,8 @@ Supports both **UDP** and **DoH (DNS-over-HTTPS)** resolvers with end-to-end tun
 | ⚡ **High Concurrency** | 50 parallel workers by default — scans thousands of resolvers in minutes |
 | 📋 **JSON Pipeline** | Output from one scan feeds into the next for multi-stage filtering |
 | 🌐 **CIDR Input** | Accept IP ranges like `185.51.200.0/24` — auto-expanded to individual hosts |
+| 🔎 **Neighbor Discovery** | When a resolver passes, auto-scan its /24 subnet to find more working resolvers |
+| 📦 **Throughput Test** | Verify real payload transfer (HTTP GET) through the tunnel, not just handshake |
 | 🖥️ **Interactive TUI** | Full terminal UI with guided setup — no flags to remember |
 | 🔌 **Fully Offline** | Zero-config: auto-loads bundled resolvers, no `-i` or `-o` needed |
 
@@ -85,8 +87,6 @@ chmod +x findns-linux-amd64
 - **Go 1.24+** for building from source
 - **dnstt-client** — only for e2e tunnel tests (`--pubkey`). Install: `go install www.bamsoftware.com/git/dnstt.git/dnstt-client@latest`
 - **slipstream-client** — only for e2e Slipstream tests (`--cert`)
-- **curl** — for e2e connectivity verification
-
 > **Finding binaries:** findns automatically searches for `dnstt-client` and `slipstream-client` in three places: 1) `PATH` 2) current directory 3) next to the findns executable. The simplest approach: place the binary next to findns.
 >
 > Without `--pubkey`, the scanner still finds resolvers compatible with DNS tunneling — it tests ping, resolve, NXDOMAIN, EDNS, and tunnel delegation without needing dnstt-client.
@@ -141,7 +141,6 @@ Use `.\findns.exe` instead of `findns` in all commands:
 
 ### Prerequisites
 
-- **curl** — included by default in Windows 10/11
 - **dnstt-client.exe** — place next to `findns.exe` or in a folder in your `PATH` (only for e2e DNSTT tests)
 - **slipstream-client.exe** — same as above (only for e2e Slipstream tests)
 
@@ -221,6 +220,15 @@ findns scan --cidr 5.52.0.0/16 --cidr 185.51.200.0/24 --domain t.example.com
 
 # 📏 Custom EDNS buffer size (lower if you hit fragmentation)
 findns scan --domain t.example.com --edns --edns-size 900
+
+# 🔎 Discover neighbor resolvers automatically
+findns scan --domain t.example.com --pubkey <key> --discover
+
+# 📦 Include throughput test (verify real data transfer)
+findns scan --domain t.example.com --pubkey <key> --throughput
+
+# 🔎📦 Both: discover + throughput
+findns scan --domain t.example.com --pubkey <key> --discover --throughput
 ```
 
 ### 3️⃣ Check Results
@@ -268,7 +276,7 @@ findns scan --domain t.example.com
 
 > `-i` and `-o` are optional. Without `-i`, bundled Iranian resolvers are used. Without `-o`, results save to `results.json`.
 
-**UDP mode pipeline:** `ping → nxdomain → resolve/tunnel → e2e` (add `--edns` for EDNS payload check)
+**UDP mode pipeline:** `ping → nxdomain → resolve/tunnel → e2e` (add `--edns` for EDNS, `--throughput` for payload test, `--discover` for neighbor scanning)
 **DoH mode pipeline:** `doh/resolve/tunnel → doh/e2e`
 
 > When `--domain` is set, the basic `resolve` step (A record for google.com) is skipped — tunnel domains have no A record, so findns goes straight to `resolve/tunnel`.
@@ -278,16 +286,47 @@ findns scan --domain t.example.com
 | `--domain` | Tunnel domain (enables tunnel/e2e steps) | — |
 | `--pubkey` | DNSTT server public key (enables e2e test) | — |
 | `--cert` | Slipstream cert path (enables Slipstream e2e) | — |
-| `--test-url` | URL to fetch through tunnel for e2e test | `http://httpbin.org/ip` |
-| `--proxy-auth` | SOCKS proxy auth as `user:pass` (for e2e tests) | — |
 | `--doh` | Scan DoH resolvers instead of UDP | `false` |
 | `--edns` | Include EDNS payload size check | `false` |
 | `--edns-size` | EDNS0 UDP payload size in bytes (larger = better throughput) | `1232` |
+| `--throughput` | Include payload transfer test after e2e (requires `--pubkey`) | `false` |
+| `--discover` | Auto-discover neighbor /24 subnets when resolvers pass all steps | `false` |
+| `--discover-rounds` | Max neighbor discovery rounds | `3` |
 | `--cidr` | Scan a CIDR range directly (e.g. `--cidr 5.52.0.0/16`) | — |
 | `--skip-ping` | Skip ICMP ping step | `false` |
 | `--skip-nxdomain` | Skip NXDOMAIN hijack check | `false` |
 | `--top` | Number of top results to display | `10` |
 | `--output-ips` | Write plain IP list alongside JSON | auto |
+| `--batch` | Scan N resolvers at a time, saving after each batch | `0` (all) |
+| `--resume` | Skip IPs already in the output file | `false` |
+
+---
+
+### 🔎 Neighbor Discovery (`--discover`)
+
+When a resolver passes all scan steps, its **/24 subnet** (e.g. `1.2.3.0/24`) is automatically expanded and queued for scanning. In practice, if `1.2.3.4` is a working resolver, its neighbors like `1.2.3.7`, `1.2.3.99` are often working too.
+
+```bash
+# Scan with neighbor discovery (up to 3 rounds by default)
+findns scan --domain t.example.com --pubkey <key> --discover
+
+# Limit to 5 discovery rounds
+findns scan --domain t.example.com --pubkey <key> --discover --discover-rounds 5
+```
+
+Discovery runs in rounds: each round collects new /24s from passed IPs, expands them, filters out already-scanned IPs, and runs the full pipeline. Stops when no new subnets are found or the round limit is reached.
+
+---
+
+### 📦 Throughput Test (`--throughput`)
+
+Goes beyond the e2e handshake — actually transfers data through the tunnel by performing an HTTP GET request through the SOCKS5 proxy. This catches resolvers that pass the handshake but can't carry real payload (rate limiting, packet filtering, etc.).
+
+```bash
+findns scan --domain t.example.com --pubkey <key> --throughput
+```
+
+**Metrics:** `throughput_bytes` (total bytes received), `throughput_ms` (total transfer time)
 
 ---
 
@@ -411,7 +450,7 @@ findns edns -i resolvers.txt -o result.json --domain t.example.com --edns-size 4
 
 ### 🚇 `e2e dnstt` — End-to-End DNSTT Test (UDP)
 
-Actually launches `dnstt-client`, creates a SOCKS tunnel, and verifies connectivity with `curl`.
+Actually launches `dnstt-client`, creates a SOCKS tunnel, and performs a SOCKS5 handshake to verify bidirectional data flow through the DNS tunnel.
 
 ```bash
 findns e2e dnstt -i resolvers.txt -o result.json \
@@ -496,6 +535,7 @@ findns chain -i doh-resolvers.txt -o result.json \
 | `edns` | `domain` | `edns_max` | EDNS payload size support |
 | `e2e/dnstt` | `domain`, `pubkey` | `e2e_ms` | Real DNSTT tunnel test |
 | `e2e/slipstream` | `domain`, `cert` | `e2e_ms` | Real Slipstream tunnel test |
+| `throughput/dnstt` | `domain`, `pubkey` | `throughput_bytes`, `throughput_ms` | Payload transfer through DNSTT tunnel |
 | `doh/resolve` | `domain` | `resolve_ms` | DoH DNS resolution |
 | `doh/resolve/tunnel` | `domain` | `resolve_ms` | DoH NS delegation |
 | `doh/e2e` | `domain`, `pubkey` | `e2e_ms` | Real DNSTT tunnel via DoH |
@@ -637,7 +677,7 @@ MIT
 | امکان | توضیح |
 |-------|-------|
 | 🔄 **اسکن UDP + DoH** | تست هم DNS ساده (پورت 53) و هم DNS-over-HTTPS (پورت 443) |
-| 🔗 **پایپلاین کامل** | Ping → Resolve → NXDOMAIN → EDNS → Tunnel → E2E با یک دستور |
+| 🔗 **پایپلاین کامل** | Ping → Resolve → NXDOMAIN → EDNS → Tunnel → E2E → Throughput با یک دستور |
 | 🛡️ **تشخیص هایجک** | شناسایی resolverهایی که جواب جعلی برمی‌گردانند |
 | 📏 **تست EDNS** | پیدا کردن resolverهایی که payload بزرگ پشتیبانی می‌کنند (تانل سریع‌تر) |
 | 🚇 **تست واقعی تانل** | واقعاً کلاینت DNSTT/Slipstream را اجرا می‌کند و اتصال را تأیید می‌کند |
@@ -646,6 +686,8 @@ MIT
 | ⚡ **همزمانی بالا** | 50 worker موازی — هزاران resolver در چند دقیقه اسکن می‌شود |
 | 📋 **خروجی JSON** | خروجی هر اسکن ورودی اسکن بعدی می‌شود |
 | 🌐 **ورودی CIDR** | رنج آی‌پی مثل `185.51.200.0/24` را می‌خواند و به صورت خودکار باز می‌کند |
+| 🔎 **کشف همسایه** | وقتی resolveری پاس شد، خودکار /24 همسایه‌اش اسکن می‌شود |
+| 📦 **تست Throughput** | تست ارسال و دریافت واقعی دیتا از تانل (HTTP GET)، نه فقط هندشیک |
 | 🖥️ **رابط کاربری ترمینال (TUI)** | رابط تعاملی کامل — بدون نیاز به حفظ فلگ‌ها |
 | 🔌 **کاملاً آفلاین** | بدون تنظیم: resolverهای داخلی خودکار بارگذاری می‌شوند، نیازی به `-i` یا `-o` نیست |
 
@@ -723,8 +765,6 @@ chmod +x findns-linux-amd64
 - **Go 1.24+** برای بیلد از سورس
 - **dnstt-client** — فقط برای تست e2e تانل (`--pubkey`). نصب: `go install www.bamsoftware.com/git/dnstt.git/dnstt-client@latest`
 - **slipstream-client** — فقط برای تست e2e Slipstream (`--cert`)
-- **curl** — برای تأیید اتصال e2e
-
 > **پیدا کردن باینری:** findns به صورت خودکار `dnstt-client` و `slipstream-client` را در سه مسیر جستجو می‌کند: ۱) `PATH` سیستم ۲) پوشه فعلی ۳) کنار فایل findns. ساده‌ترین روش: فایل را کنار findns بگذارید.
 >
 > بدون `--pubkey` هم اسکنر resolverهای سازگار با تانل DNS را پیدا می‌کند (ping, resolve, nxdomain, edns, tunnel delegation بدون نیاز به dnstt-client).
@@ -791,7 +831,6 @@ go build -o findns.exe ./cmd
 
 ### پیش‌نیازها
 
-- **curl** — در ویندوز 10/11 به صورت پیش‌فرض نصب است
 - **dnstt-client.exe** — کنار `findns.exe` قرار دهید یا در PATH اضافه کنید (فقط برای تست e2e DNSTT)
 - **slipstream-client.exe** — مثل بالا (فقط برای تست e2e Slipstream)
 
@@ -885,6 +924,15 @@ findns scan --cidr 5.52.0.0/16 --cidr 185.51.200.0/24 --domain t.example.com
 
 # 📏 تنظیم سایز بافر EDNS (کمتر کنید اگر فرگمنتیشن دارید)
 findns scan --domain t.example.com --edns --edns-size 900
+
+# 🔎 کشف خودکار همسایه‌ها
+findns scan --domain t.example.com --pubkey <key> --discover
+
+# 📦 تست انتقال واقعی دیتا از تانل
+findns scan --domain t.example.com --pubkey <key> --throughput
+
+# 🔎📦 هر دو: کشف همسایه + تست throughput
+findns scan --domain t.example.com --pubkey <key> --discover --throughput
 ```
 
 <div dir="rtl">
@@ -935,7 +983,7 @@ findns tui
 
 به صورت خودکار مراحل مناسب را بر اساس فلگ‌ها ترتیب می‌دهد.
 
-**حالت UDP:** `ping → nxdomain → resolve/tunnel → e2e` (با `--edns` مرحله EDNS اضافه می‌شود)
+**حالت UDP:** `ping → nxdomain → resolve/tunnel → e2e` (با `--edns` مرحله EDNS، با `--throughput` تست انتقال دیتا، با `--discover` کشف همسایه اضافه می‌شود)
 **حالت DoH:** `doh/resolve/tunnel → doh/e2e`
 
 > وقتی `--domain` تنظیم شود، مرحله `resolve` ساده (رکورد A برای google.com) رد می‌شود — دامنه‌های تانل رکورد A ندارند، بنابراین findns مستقیم به `resolve/tunnel` می‌رود.
@@ -945,16 +993,19 @@ findns tui
 | `--domain` | دامنه تانل (فعال‌سازی تست تانل/e2e) | — |
 | `--pubkey` | کلید عمومی سرور DNSTT (فعال‌سازی تست e2e) | — |
 | `--cert` | مسیر گواهی Slipstream (فعال‌سازی تست Slipstream) | — |
-| `--test-url` | آدرس برای تست اتصال e2e | `http://httpbin.org/ip` |
-| `--proxy-auth` | احراز هویت پروکسی SOCKS به صورت `user:pass` (برای تست e2e) | — |
 | `--doh` | اسکن DoH به جای UDP | `false` |
 | `--edns` | فعال‌سازی تست سایز EDNS payload | `false` |
 | `--edns-size` | سایز بافر EDNS0 به بایت (بزرگتر = سرعت بیشتر) | `1232` |
+| `--throughput` | تست انتقال واقعی دیتا بعد از e2e (نیاز به `--pubkey`) | `false` |
+| `--discover` | کشف خودکار /24 همسایه وقتی resolver پاس شد | `false` |
+| `--discover-rounds` | حداکثر تعداد دورهای کشف همسایه | `3` |
 | `--cidr` | اسکن مستقیم رنج CIDR (مثلاً `--cidr 5.52.0.0/16`) | — |
 | `--skip-ping` | رد کردن مرحله ping | `false` |
 | `--skip-nxdomain` | رد کردن بررسی هایجک | `false` |
 | `--top` | تعداد نتایج برتر برای نمایش | `10` |
 | `--output-ips` | خروجی لیست آی‌پی ساده کنار JSON | خودکار |
+| `--batch` | اسکن N ریزالور در هر دسته (ذخیره بعد هر دسته) | `0` (همه) |
+| `--resume` | رد کردن آی‌پی‌هایی که قبلاً اسکن شده‌اند | `false` |
 
 ---
 
@@ -1105,7 +1156,7 @@ findns edns -i resolvers.txt -o result.json --domain t.example.com --edns-size 4
 
 ### 🚇 `e2e dnstt` — تست واقعی تانل DNSTT (UDP)
 
-واقعاً `dnstt-client` را اجرا می‌کند، تانل SOCKS ایجاد می‌کند و اتصال را با `curl` تأیید می‌کند.
+واقعاً `dnstt-client` را اجرا می‌کند، تانل SOCKS ایجاد می‌کند و با هندشیک SOCKS5 جریان دوطرفه دیتا از تانل DNS را تأیید می‌کند.
 
 </div>
 
@@ -1218,6 +1269,7 @@ findns chain -i doh-resolvers.txt -o result.json \
 | `edns` | `domain` | `edns_max` | تست سایز payload EDNS |
 | `e2e/dnstt` | `domain`, `pubkey` | `e2e_ms` | تست واقعی تانل DNSTT |
 | `e2e/slipstream` | `domain`, `cert` | `e2e_ms` | تست واقعی تانل Slipstream |
+| `throughput/dnstt` | `domain`, `pubkey` | `throughput_bytes`, `throughput_ms` | تست انتقال واقعی دیتا از تانل DNSTT |
 | `doh/resolve` | `domain` | `resolve_ms` | resolve از طریق DoH |
 | `doh/resolve/tunnel` | `domain` | `resolve_ms` | NS delegation از طریق DoH |
 | `doh/e2e` | `domain`, `pubkey` | `e2e_ms` | تست واقعی تانل از طریق DoH |

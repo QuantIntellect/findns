@@ -110,6 +110,17 @@ func buildStep(cfg stepConfig, defaultTimeout, defaultCount int, ports chan int,
 		cert := cfg.params["cert"]
 		return scanner.Step{Name: "e2e/slipstream", Timeout: dur, Check: scanner.SlipstreamCheckBin(binPaths["slipstream-client"], domain, cert, ports), SortBy: "e2e_ms"}, nil
 
+	case "throughput/dnstt":
+		domain, ok := cfg.params["domain"]
+		if !ok || domain == "" {
+			return scanner.Step{}, fmt.Errorf("step %q: missing required param 'domain'", cfg.name)
+		}
+		pubkey, ok := cfg.params["pubkey"]
+		if !ok || pubkey == "" {
+			return scanner.Step{}, fmt.Errorf("step %q: missing required param 'pubkey'", cfg.name)
+		}
+		return scanner.Step{Name: "throughput/dnstt", Timeout: dur, Check: scanner.ThroughputCheckBin(binPaths["dnstt-client"], domain, pubkey, ports), SortBy: "throughput_ms"}, nil
+
 	case "nxdomain":
 		return scanner.Step{Name: "nxdomain", Timeout: dur, Check: scanner.NXDomainCheck(stepCount), SortBy: "hijack"}, nil
 
@@ -168,16 +179,13 @@ func runChain(cmd *cobra.Command, args []string) error {
 	binPaths := make(map[string]string) // "dnstt-client" -> resolved path
 	for _, cfg := range configs {
 		switch cfg.name {
-		case "e2e/dnstt", "doh/e2e":
+		case "e2e/dnstt", "doh/e2e", "throughput/dnstt":
 			if _, ok := binPaths["dnstt-client"]; !ok {
 				bin, err := findBinary("dnstt-client")
 				if err != nil {
 					return fmt.Errorf("step %q requires dnstt-client: %w", cfg.name, err)
 				}
 				binPaths["dnstt-client"] = bin
-			}
-			if _, err := findBinary("curl"); err != nil {
-				return fmt.Errorf("step %q requires curl in PATH (not found)", cfg.name)
 			}
 		case "e2e/slipstream":
 			if _, ok := binPaths["slipstream-client"]; !ok {

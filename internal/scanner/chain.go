@@ -166,6 +166,24 @@ func WriteChainReport(report ChainReport, path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// MergeChainReports merges src into dst, accumulating step counts and results.
+func MergeChainReports(dst *ChainReport, src ChainReport) {
+	dst.Passed = append(dst.Passed, src.Passed...)
+	dst.Failed = append(dst.Failed, src.Failed...)
+	if len(dst.Steps) == 0 {
+		dst.Steps = src.Steps
+	} else {
+		for i := range dst.Steps {
+			if i < len(src.Steps) {
+				dst.Steps[i].Tested += src.Steps[i].Tested
+				dst.Steps[i].Passed += src.Steps[i].Passed
+				dst.Steps[i].Failed += src.Steps[i].Failed
+				dst.Steps[i].Seconds += src.Steps[i].Seconds
+			}
+		}
+	}
+}
+
 // LoadChainReport reads a previously saved ChainReport from disk.
 func LoadChainReport(path string) (ChainReport, error) {
 	raw, err := os.ReadFile(path)

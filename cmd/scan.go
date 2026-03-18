@@ -33,6 +33,7 @@ var stepDescriptions = map[string]string{
 	"resolve/tunnel":     "Verifying resolvers forward queries to your tunnel domain",
 	"e2e/dnstt":          "End-to-end DNSTT tunnel test (Noise handshake through resolver)",
 	"e2e/slipstream":     "Full tunnel connectivity test via Slipstream",
+	"throughput/dnstt":   "Testing real payload transfer through DNSTT tunnel",
 	"doh/resolve":        "Checking DoH resolver connectivity",
 	"doh/resolve/tunnel": "Verifying DoH resolvers forward to your tunnel domain",
 	"doh/e2e":            "Full DoH tunnel connectivity test via DNSTT",
@@ -71,6 +72,9 @@ func init() {
 	scanCmd.Flags().Int("top", 10, "number of top results to display")
 	scanCmd.Flags().Int("batch", 0, "scan N resolvers at a time, saving after each batch (0 = all at once)")
 	scanCmd.Flags().Bool("resume", false, "skip IPs already in the output file (resume a previous scan)")
+	scanCmd.Flags().Bool("discover", false, "auto-discover neighbor /24 subnets when IPs pass all steps")
+	scanCmd.Flags().Int("discover-rounds", 3, "max neighbor discovery rounds (default 3)")
+	scanCmd.Flags().Bool("throughput", false, "include payload transfer test after e2e (requires --pubkey)")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -91,6 +95,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	querySize, _ := cmd.Flags().GetInt("query-size")
 	cidrRanges, _ := cmd.Flags().GetStringSlice("cidr")
 	cidrFile, _ := cmd.Flags().GetString("cidr-file")
+	discover, _ := cmd.Flags().GetBool("discover")
+	discoverRounds, _ := cmd.Flags().GetInt("discover-rounds")
+	throughput, _ := cmd.Flags().GetBool("throughput")
 
 	// Load additional CIDRs from file if provided
 	if cidrFile != "" {
@@ -249,6 +256,12 @@ func runScan(cmd *cobra.Command, args []string) error {
 				Name: "e2e/dnstt", Timeout: time.Duration(e2eTimeout) * time.Second,
 				Check: scanner.DnsttCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "socks_ms",
 			})
+			if throughput {
+				steps = append(steps, scanner.Step{
+					Name: "throughput/dnstt", Timeout: time.Duration(e2eTimeout) * time.Second,
+					Check: scanner.ThroughputCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "throughput_ms",
+				})
+			}
 		}
 		if domain != "" && certPath != "" {
 			steps = append(steps, scanner.Step{
@@ -264,19 +277,19 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// --resume: load existing results and skip already-scanned IPs
 	var allPassed []scanner.IPRecord
+	scanned := make(map[string]struct{}) // tracks all IPs seen (for --discover dedup)
 	if resume {
 		if existing, err := scanner.LoadChainReport(outputFile); err == nil {
-			seen := make(map[string]bool, len(existing.Passed)+len(existing.Failed))
 			for _, r := range existing.Passed {
-				seen[r.IP] = true
+				scanned[r.IP] = struct{}{}
 				allPassed = append(allPassed, r)
 			}
 			for _, r := range existing.Failed {
-				seen[r.IP] = true
+				scanned[r.IP] = struct{}{}
 			}
 			filtered := ips[:0]
 			for _, ip := range ips {
-				if !seen[ip] {
+				if _, ok := scanned[ip]; !ok {
 					filtered = append(filtered, ip)
 				}
 			}
@@ -289,6 +302,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 				return nil
 			}
 		}
+	}
+	// Add current IPs to scanned set
+	for _, ip := range ips {
+		scanned[ip] = struct{}{}
 	}
 
 	if outputIPs == "" {
@@ -317,9 +334,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 	scanner.ResetE2EDiagnostic()
 	scanStart := time.Now()
 
+	var report scanner.ChainReport
+
 	// --batch: split IPs into chunks, save after each batch
 	if batchSize > 0 && len(ips) > batchSize {
-		var combinedReport scanner.ChainReport
 		totalBatches := (len(ips) + batchSize - 1) / batchSize
 		for i := 0; i < len(ips); i += batchSize {
 			if ctx.Err() != nil {
@@ -334,48 +352,90 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "\n  %s━━━ Batch %d/%d (%d IPs) ━━━%s\n\n",
 				colorCyan, batchNum, totalBatches, len(chunk), colorReset)
 
-			report := scanner.RunChainQuietCtx(ctx, chunk, workers, steps,
+			batchReport := scanner.RunChainQuietCtx(ctx, chunk, workers, steps,
 				newScanProgressFactory(len(steps), stepDescriptions))
 
-			// Merge into combined report
-			combinedReport.Passed = append(combinedReport.Passed, report.Passed...)
-			combinedReport.Failed = append(combinedReport.Failed, report.Failed...)
-			if len(combinedReport.Steps) == 0 {
-				combinedReport.Steps = report.Steps
-			} else {
-				for j := range combinedReport.Steps {
-					if j < len(report.Steps) {
-						combinedReport.Steps[j].Tested += report.Steps[j].Tested
-						combinedReport.Steps[j].Passed += report.Steps[j].Passed
-						combinedReport.Steps[j].Failed += report.Steps[j].Failed
-						combinedReport.Steps[j].Seconds += report.Steps[j].Seconds
-					}
-				}
-			}
+			scanner.MergeChainReports(&report, batchReport)
 
 			// Save after each batch
-			saveResults(combinedReport)
-			totalPassed := len(allPassed) + len(combinedReport.Passed)
+			saveResults(report)
+			totalPassed := len(allPassed) + len(report.Passed)
 			fmt.Fprintf(os.Stderr, "  %s✔ Batch %d done — %d passed so far — saved to %s%s\n",
 				colorGreen, batchNum, totalPassed, outputFile, colorReset)
 		}
-
-		totalTime := time.Since(scanStart)
-		if ctx.Err() != nil {
-			fmt.Fprintf(os.Stderr, "\n  %s⚠ Interrupted — partial results saved to %s%s\n", colorYellow, outputFile, colorReset)
-		}
-		printSummary(combinedReport, topN, totalTime, domain)
-		totalPassed := len(allPassed) + len(combinedReport.Passed)
-		fmt.Fprintf(os.Stderr, "  %s✔ IP list written to %s (%d IPs)%s\n", colorGreen, outputIPs, totalPassed, colorReset)
-		return nil
+	} else {
+		// No batching — scan all at once
+		report = scanner.RunChainQuietCtx(ctx, ips, workers, steps,
+			newScanProgressFactory(len(steps), stepDescriptions))
 	}
 
-	// No batching — scan all at once
-	report := scanner.RunChainQuietCtx(ctx, ips, workers, steps, newScanProgressFactory(len(steps), stepDescriptions))
+	// --discover: find neighbor /24 subnets from passed IPs and scan them
+	if discover && !dohMode && ctx.Err() == nil && len(report.Passed) > 0 {
+		knownSubnets := make(map[string]struct{})
+
+		for round := 1; round <= discoverRounds; round++ {
+			if ctx.Err() != nil {
+				break
+			}
+
+			// Collect /24s from ALL passed IPs (including previous rounds)
+			passedIPs := make([]string, len(report.Passed))
+			for i, r := range report.Passed {
+				passedIPs[i] = r.IP
+			}
+			newSubnets := scanner.SubnetsFromIPs(passedIPs)
+
+			// Filter out already-known subnets
+			var toExpand []string
+			for _, cidr := range newSubnets {
+				if _, ok := knownSubnets[cidr]; !ok {
+					knownSubnets[cidr] = struct{}{}
+					toExpand = append(toExpand, cidr)
+				}
+			}
+			if len(toExpand) == 0 {
+				fmt.Fprintf(os.Stderr, "\n  %s✔ Discovery: no new /24 subnets found%s\n", colorGreen, colorReset)
+				break
+			}
+
+			// Expand to individual IPs, excluding already scanned
+			neighborIPs := scanner.ExpandSubnets(toExpand, scanned)
+			if len(neighborIPs) == 0 {
+				fmt.Fprintf(os.Stderr, "\n  %s✔ Discovery round %d: %d subnets but all IPs already scanned%s\n",
+					colorGreen, round, len(toExpand), colorReset)
+				break
+			}
+
+			// Mark as scanned
+			for _, ip := range neighborIPs {
+				scanned[ip] = struct{}{}
+			}
+
+			fmt.Fprintf(os.Stderr, "\n  %s━━━ Discovery round %d: %d new /24 subnets → %d IPs ━━━%s\n\n",
+				colorCyan, round, len(toExpand), len(neighborIPs), colorReset)
+
+			roundReport := scanner.RunChainQuietCtx(ctx, neighborIPs, workers, steps,
+				newScanProgressFactory(len(steps), stepDescriptions))
+
+			scanner.MergeChainReports(&report, roundReport)
+
+			// Save after each discovery round
+			saveResults(report)
+			totalPassed := len(allPassed) + len(report.Passed)
+			fmt.Fprintf(os.Stderr, "  %s✔ Round %d: %d new resolvers — %d total passed — saved to %s%s\n",
+				colorGreen, round, len(roundReport.Passed), totalPassed, outputFile, colorReset)
+
+			if len(roundReport.Passed) == 0 {
+				fmt.Fprintf(os.Stderr, "  %s✔ Discovery: no new resolvers found, stopping%s\n", colorGreen, colorReset)
+				break
+			}
+		}
+	}
+
 	totalTime := time.Since(scanStart)
 
 	if ctx.Err() != nil {
-		fmt.Fprintf(os.Stderr, "\n\n  %s⚠ Interrupted — saving partial results to %s%s\n", colorYellow, outputFile, colorReset)
+		fmt.Fprintf(os.Stderr, "\n  %s⚠ Interrupted — partial results saved to %s%s\n", colorYellow, outputFile, colorReset)
 	}
 
 	printSummary(report, topN, totalTime, domain)
