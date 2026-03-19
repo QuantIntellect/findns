@@ -33,9 +33,12 @@ type ScanConfig struct {
 	SkipPing     bool
 	SkipNXDomain bool
 	EDNS         bool
-	E2E          bool
-	DoH          bool
-	OutputFile   string
+	E2E            bool
+	DoH            bool
+	Discover       bool
+	DiscoverRounds int
+	Throughput     bool
+	OutputFile     string
 }
 
 type Model struct {
@@ -67,7 +70,19 @@ type Model struct {
 	scanCancel context.CancelFunc
 	cancelling bool
 	progressCh chan progressMsg
+	pipelineCh chan pipelineProgressMsg
 	doneCh     chan scanDoneMsg
+
+	// Pipeline tracking
+	pipelineDone   int
+	pipelineTotal  int
+	pipelinePassed int
+	pipelineFailed int
+	recentPassed   []scanner.IPRecord
+	resultsScroll  int // scroll offset for live results during scan
+	pStepTested    []int
+	pStepPassed    []int
+	pStepFailed    []int
 
 	// Results screen
 	report    scanner.ChainReport

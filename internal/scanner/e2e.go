@@ -330,6 +330,189 @@ func slipstreamCheck(bin, domain, certPath string, ports chan int) CheckFunc {
 }
 
 
+// ThroughputCheckBin tests actual data transfer through the DNS tunnel by
+// performing an HTTP GET request via the SOCKS5 proxy. This goes beyond the
+// e2e handshake test — it verifies that meaningful payload (1-2KB+) flows
+// bidirectionally through the tunnel.
+func ThroughputCheckBin(bin, domain, pubkey string, ports chan int) CheckFunc {
+	var diagOnce atomic.Bool
+
+	return func(ip string, timeout time.Duration) (bool, Metrics) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		var port int
+		select {
+		case port = <-ports:
+		case <-ctx.Done():
+			return false, nil
+		}
+
+		start := time.Now()
+
+		var stderrBuf bytes.Buffer
+		args := []string{
+			"-udp", net.JoinHostPort(ip, "53"),
+			"-pubkey", pubkey,
+		}
+		if DnsttMTU > 0 {
+			args = append(args, "-mtu", strconv.Itoa(DnsttMTU))
+		}
+		args = append(args, domain, fmt.Sprintf("127.0.0.1:%d", port))
+		cmd := execCommandContext(ctx, bin, args...)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = &stderrBuf
+		if err := cmd.Start(); err != nil {
+			ports <- port
+			return false, nil
+		}
+
+		exited := make(chan struct{})
+		go func() {
+			cmd.Wait()
+			close(exited)
+		}()
+
+		defer func() {
+			cmd.Process.Kill()
+			select {
+			case <-exited:
+			case <-time.After(2 * time.Second):
+			}
+			time.Sleep(300 * time.Millisecond)
+			ports <- port
+		}()
+
+		transferred, ok := waitAndTestThroughput(ctx, port, exited)
+		if !ok {
+			if diagOnce.CompareAndSwap(false, true) {
+				cmd.Process.Kill()
+				select {
+				case <-exited:
+				case <-time.After(2 * time.Second):
+				}
+				stderr := strings.TrimSpace(stderrBuf.String())
+				if stderr != "" {
+					setDiag("throughput first failure (ip=%s): %s", ip, truncate(stderr, 300))
+				} else {
+					setDiag("throughput first failure (ip=%s): could not transfer data within %v", ip, timeout)
+				}
+			}
+			return false, nil
+		}
+		ms := roundMs(float64(time.Since(start).Microseconds()) / 1000.0)
+		return true, Metrics{
+			"throughput_bytes": float64(transferred),
+			"throughput_ms":   ms,
+		}
+	}
+}
+
+// waitAndTestThroughput waits for the SOCKS port to open, performs a full
+// SOCKS5 CONNECT to example.com:80, sends an HTTP GET request, and reads
+// the response. This proves that real data (not just a handshake) can flow
+// through the DNS tunnel.
+func waitAndTestThroughput(ctx context.Context, port int, exited <-chan struct{}) (int, bool) {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-exited:
+			return 0, false
+		default:
+		}
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return 0, false
+			case <-exited:
+				return 0, false
+			case <-time.After(300 * time.Millisecond):
+			}
+			continue
+		}
+
+		if deadline, ok := ctx.Deadline(); ok {
+			conn.SetDeadline(deadline)
+		}
+
+		// Step 1: SOCKS5 auth
+		if _, err = conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+			conn.Close()
+			return 0, false
+		}
+		authResp := make([]byte, 2)
+		if _, err = io.ReadFull(conn, authResp); err != nil || authResp[0] != 0x05 {
+			conn.Close()
+			return 0, false
+		}
+
+		// Step 2: SOCKS5 CONNECT to example.com:80
+		target := "example.com"
+		connectReq := make([]byte, 0, 7+len(target))
+		connectReq = append(connectReq, 0x05, 0x01, 0x00, 0x03)
+		connectReq = append(connectReq, byte(len(target)))
+		connectReq = append(connectReq, []byte(target)...)
+		connectReq = append(connectReq, 0x00, 0x50) // port 80
+		if _, err = conn.Write(connectReq); err != nil {
+			conn.Close()
+			return 0, false
+		}
+
+		// Step 3: Read SOCKS5 CONNECT reply header
+		hdr := make([]byte, 4) // VER, REP, RSV, ATYP
+		if _, err = io.ReadFull(conn, hdr); err != nil {
+			conn.Close()
+			return 0, false
+		}
+		if hdr[0] != 0x05 || hdr[1] != 0x00 {
+			// CONNECT failed — server may lack internet access
+			conn.Close()
+			return 0, false
+		}
+		// Drain remaining CONNECT reply based on ATYP
+		switch hdr[3] {
+		case 0x01: // IPv4: 4 addr + 2 port
+			io.ReadFull(conn, make([]byte, 6))
+		case 0x03: // Domain: 1 len + domain + 2 port
+			lenBuf := make([]byte, 1)
+			if _, err = io.ReadFull(conn, lenBuf); err == nil {
+				io.ReadFull(conn, make([]byte, int(lenBuf[0])+2))
+			}
+		case 0x04: // IPv6: 16 addr + 2 port
+			io.ReadFull(conn, make([]byte, 18))
+		}
+
+		// Step 4: Send HTTP GET request through the tunnel
+		httpReq := "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+		if _, err = conn.Write([]byte(httpReq)); err != nil {
+			conn.Close()
+			return 0, false
+		}
+
+		// Step 5: Read HTTP response
+		buf := make([]byte, 65536)
+		totalRead := 0
+		for {
+			n, readErr := conn.Read(buf[totalRead:])
+			totalRead += n
+			if readErr != nil || totalRead >= len(buf) {
+				break
+			}
+		}
+		conn.Close()
+
+		// Need at least 100 bytes to confirm real data transfer
+		if totalRead < 100 {
+			return totalRead, false
+		}
+		return totalRead, true
+	}
+}
+
 func truncate(s string, maxLen int) string {
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 		s = s[:idx]
