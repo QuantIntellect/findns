@@ -57,8 +57,12 @@ func buildSteps(cfg ScanConfig) ([]scanner.Step, error) {
 		slipstreamBin = bin
 	}
 	var ports chan int
+	var throughputPorts chan int
 	if needE2E {
 		ports = scanner.PortPool(30000, cfg.Workers)
+		if cfg.Throughput {
+			throughputPorts = scanner.PortPool(30000+cfg.Workers, cfg.Workers)
+		}
 	}
 
 	if cfg.DoH {
@@ -119,7 +123,7 @@ func buildSteps(cfg ScanConfig) ([]scanner.Step, error) {
 			if cfg.Throughput {
 				steps = append(steps, scanner.Step{
 					Name: "throughput/dnstt", Timeout: e2eDur,
-					Check: scanner.ThroughputCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, ports), SortBy: "throughput_ms",
+					Check: scanner.ThroughputCheckBin(dnsttBin, cfg.Domain, cfg.Pubkey, throughputPorts), SortBy: "throughput_ms",
 				})
 			}
 		}
@@ -239,13 +243,111 @@ func launchScan(ctx context.Context, ips []string, cfg ScanConfig, steps []scann
 			report.Passed = []scanner.IPRecord{}
 		}
 
+		// --discover: run neighbor discovery rounds if enabled
+		const maxDiscoverIPs = 2500
+		if cfg.Discover && !cfg.DoH && ctx.Err() == nil && len(report.Passed) > 0 {
+			scanned := make(map[string]struct{})
+			for _, ip := range ips {
+				scanned[ip] = struct{}{}
+			}
+			knownSubnets := make(map[string]struct{})
+			discoverRounds := cfg.DiscoverRounds
+			if discoverRounds <= 0 {
+				discoverRounds = 3
+			}
+
+			for round := 1; round <= discoverRounds; round++ {
+				if ctx.Err() != nil {
+					break
+				}
+				passedIPs := make([]string, len(report.Passed))
+				for idx, r := range report.Passed {
+					passedIPs[idx] = r.IP
+				}
+				newSubnets := scanner.SubnetsFromIPs(passedIPs)
+				var toExpand []string
+				for _, cidr := range newSubnets {
+					if _, ok := knownSubnets[cidr]; !ok {
+						knownSubnets[cidr] = struct{}{}
+						toExpand = append(toExpand, cidr)
+					}
+				}
+				if len(toExpand) == 0 {
+					break
+				}
+				neighborIPs := scanner.ExpandSubnets(toExpand, scanned)
+				if len(neighborIPs) == 0 {
+					break
+				}
+				if len(neighborIPs) > maxDiscoverIPs {
+					neighborIPs = neighborIPs[:maxDiscoverIPs]
+				}
+				for _, ip := range neighborIPs {
+					scanned[ip] = struct{}{}
+				}
+
+				roundCh := scanner.RunPipeline(ctx, neighborIPs, cfg.Workers, steps)
+				for r := range roundCh {
+					done++
+					total++
+
+					var latestIP string
+					var latestMetrics scanner.Metrics
+
+					if r.FailedStep == -1 {
+						for si := range steps {
+							stepTested[si]++
+							stepPassed[si]++
+						}
+						pass++
+						report.Passed = append(report.Passed, scanner.IPRecord{IP: r.IP, Metrics: r.Metrics})
+						latestIP = r.IP
+						latestMetrics = r.Metrics
+						if ipFile != nil {
+							fmt.Fprintln(ipFile, r.IP)
+						}
+					} else {
+						for si := 0; si <= r.FailedStep; si++ {
+							stepTested[si]++
+							if si < r.FailedStep {
+								stepPassed[si]++
+							} else {
+								stepFailed[si]++
+							}
+						}
+						fail++
+						report.Failed = append(report.Failed, scanner.IPRecord{IP: r.IP})
+					}
+
+					select {
+					case pipelineCh <- pipelineProgressMsg{
+						done:          done,
+						total:         total,
+						passed:        pass,
+						failed:        fail,
+						latestIP:      latestIP,
+						latestMetrics: latestMetrics,
+						stepTested:    append([]int{}, stepTested...),
+						stepPassed:    append([]int{}, stepPassed...),
+						stepFailed:    append([]int{}, stepFailed...),
+					}:
+					default:
+					}
+				}
+
+				if len(report.Passed) == pass {
+					break // no new resolvers found
+				}
+			}
+		}
+
 		elapsed := time.Since(start)
 		var writeErr error
 		if cfg.OutputFile != "" {
 			writeErr = scanner.WriteChainReport(report, cfg.OutputFile)
 			if writeErr == nil && len(report.Passed) > 0 {
-				ipFile := strings.TrimSuffix(cfg.OutputFile, ".json") + "_ips.txt"
-				_ = scanner.WriteIPList(report.Passed, ipFile)
+				ipPath := strings.TrimSuffix(cfg.OutputFile, ".json") + "_ips.txt"
+				_ = scanner.WriteIPList(report.Passed, ipPath)
 			}
 		}
 		doneCh <- scanDoneMsg{report: report, elapsed: elapsed, writeErr: writeErr}

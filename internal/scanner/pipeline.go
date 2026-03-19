@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"sync"
 )
 
 // PipelineResult is the outcome of running one IP through the full step pipeline.
@@ -33,33 +34,50 @@ func RunPipeline(ctx context.Context, ips []string, workers int, steps []Step) <
 		}
 		results := make(chan PipelineResult, bufSize)
 
-		// Launch workers — each takes one IP and runs ALL steps on it
+		// Launch workers — each takes one IP and runs ALL steps on it.
+		// WaitGroup ensures all workers finish before we close `results`,
+		// preventing goroutine leaks on context cancellation.
+		var wg sync.WaitGroup
 		for i := 0; i < workers; i++ {
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				for ip := range jobs {
 					func() {
 						defer func() {
 							if r := recover(); r != nil {
-								results <- PipelineResult{IP: ip, OK: false, FailedStep: 0}
+								select {
+								case results <- PipelineResult{IP: ip, OK: false, FailedStep: 0}:
+								case <-ctx.Done():
+								}
 							}
 						}()
 
 						m := make(Metrics)
 						for si, step := range steps {
 							if ctx.Err() != nil {
-								results <- PipelineResult{IP: ip, OK: false, FailedStep: si}
+								select {
+								case results <- PipelineResult{IP: ip, OK: false, FailedStep: si}:
+								case <-ctx.Done():
+								}
 								return
 							}
 							ok, sm := step.Check(ip, step.Timeout)
 							if !ok {
-								results <- PipelineResult{IP: ip, OK: false, FailedStep: si}
+								select {
+								case results <- PipelineResult{IP: ip, OK: false, FailedStep: si}:
+								case <-ctx.Done():
+								}
 								return
 							}
 							for k, v := range sm {
 								m[k] = v
 							}
 						}
-						results <- PipelineResult{IP: ip, OK: true, Metrics: m, FailedStep: -1}
+						select {
+						case results <- PipelineResult{IP: ip, OK: true, Metrics: m, FailedStep: -1}:
+						case <-ctx.Done():
+						}
 					}()
 				}
 			}()
@@ -67,26 +85,26 @@ func RunPipeline(ctx context.Context, ips []string, workers int, steps []Step) <
 
 		// Feed IPs to workers
 		go func() {
+			defer close(jobs)
 			for _, ip := range ips {
 				select {
 				case jobs <- ip:
 				case <-ctx.Done():
-					close(jobs)
 					return
 				}
 			}
-			close(jobs)
 		}()
 
-		// Forward results to output channel
-		for i := 0; i < len(ips); i++ {
+		// Close results channel once all workers are done
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
+		// Forward results to output channel until results is closed or context cancelled
+		for r := range results {
 			select {
-			case r := <-results:
-				select {
-				case out <- r:
-				case <-ctx.Done():
-					return
-				}
+			case out <- r:
 			case <-ctx.Done():
 				return
 			}

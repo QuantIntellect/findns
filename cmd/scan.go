@@ -75,6 +75,7 @@ func init() {
 	scanCmd.Flags().Bool("discover", false, "auto-discover neighbor /24 subnets when IPs pass all steps")
 	scanCmd.Flags().Int("discover-rounds", 3, "max neighbor discovery rounds (default 3)")
 	scanCmd.Flags().Bool("throughput", false, "include payload transfer test after e2e (requires --pubkey)")
+	scanCmd.Flags().Bool("dfs", false, "use DFS pipeline (results appear immediately; default is BFS which is more stable)")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -98,6 +99,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	discover, _ := cmd.Flags().GetBool("discover")
 	discoverRounds, _ := cmd.Flags().GetInt("discover-rounds")
 	throughput, _ := cmd.Flags().GetBool("throughput")
+	dfsMode, _ := cmd.Flags().GetBool("dfs")
 
 	// Load additional CIDRs from file if provided
 	if cidrFile != "" {
@@ -186,8 +188,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 	dur := time.Duration(timeout) * time.Second
 	needE2E := pubkey != "" || certPath != ""
 	var ports chan int
+	var throughputPorts chan int
 	if needE2E {
 		ports = scanner.PortPool(30000, workers)
+		// Separate port pool for throughput to avoid contention with e2e
+		// in DFS mode where both steps run concurrently per-worker.
+		if throughput {
+			throughputPorts = scanner.PortPool(30000+workers, workers)
+		}
 	}
 
 	var steps []scanner.Step
@@ -259,7 +267,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			if throughput {
 				steps = append(steps, scanner.Step{
 					Name: "throughput/dnstt", Timeout: time.Duration(e2eTimeout) * time.Second,
-					Check: scanner.ThroughputCheckBin(dnsttBin, domain, pubkey, ports), SortBy: "throughput_ms",
+					Check: scanner.ThroughputCheckBin(dnsttBin, domain, pubkey, throughputPorts), SortBy: "throughput_ms",
 				})
 			}
 		}
@@ -352,7 +360,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "\n  %s━━━ Batch %d/%d (%d IPs) ━━━%s\n\n",
 				colorCyan, batchNum, totalBatches, len(chunk), colorReset)
 
-			batchReport := runPipelineScan(ctx, chunk, workers, steps)
+			batchReport := runScanPipeline(ctx, chunk, workers, steps, dfsMode)
 			scanner.MergeChainReports(&report, batchReport)
 
 			saveResults(report)
@@ -361,12 +369,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 				colorGreen, batchNum, totalPassed, outputFile, colorReset)
 		}
 	} else {
-		report = runPipelineScan(ctx, ips, workers, steps)
+		report = runScanPipeline(ctx, ips, workers, steps, dfsMode)
 	}
 
-	// --discover: find neighbor /24 subnets from passed IPs and scan them
+	// --discover: find neighbor /24 subnets from passed IPs and scan them.
+	// Safety cap: each round is limited to 2500 neighbor IPs (≈10 subnets)
+	// to prevent unbounded scan explosion.
+	const maxDiscoverIPs = 2500
 	if discover && !dohMode && ctx.Err() == nil && len(report.Passed) > 0 {
 		knownSubnets := make(map[string]struct{})
+		totalDiscovered := 0
 
 		for round := 1; round <= discoverRounds; round++ {
 			if ctx.Err() != nil {
@@ -398,14 +410,22 @@ func runScan(cmd *cobra.Command, args []string) error {
 				break
 			}
 
+			// Cap neighbor IPs per round to prevent scan explosion
+			if len(neighborIPs) > maxDiscoverIPs {
+				fmt.Fprintf(os.Stderr, "\n  %s⚠ Discovery round %d: %d IPs exceeds cap (%d), truncating%s\n",
+					colorYellow, round, len(neighborIPs), maxDiscoverIPs, colorReset)
+				neighborIPs = neighborIPs[:maxDiscoverIPs]
+			}
+
 			for _, ip := range neighborIPs {
 				scanned[ip] = struct{}{}
 			}
+			totalDiscovered += len(neighborIPs)
 
-			fmt.Fprintf(os.Stderr, "\n  %s━━━ Discovery round %d: %d new /24 subnets → %d IPs ━━━%s\n\n",
-				colorCyan, round, len(toExpand), len(neighborIPs), colorReset)
+			fmt.Fprintf(os.Stderr, "\n  %s━━━ Discovery round %d: %d new /24 subnets → %d IPs (total discovered: %d) ━━━%s\n\n",
+				colorCyan, round, len(toExpand), len(neighborIPs), totalDiscovered, colorReset)
 
-			roundReport := runPipelineScan(ctx, neighborIPs, workers, steps)
+			roundReport := runScanPipeline(ctx, neighborIPs, workers, steps, dfsMode)
 			scanner.MergeChainReports(&report, roundReport)
 
 			saveResults(report)
@@ -673,10 +693,66 @@ func digitCount(n int) int {
 	return len(fmt.Sprintf("%d", n))
 }
 
-// runPipelineScan runs the DFS-style pipeline where each worker processes
+// runScanPipeline dispatches to BFS (default, stable) or DFS (opt-in via --dfs).
+func runScanPipeline(ctx context.Context, ips []string, workers int, steps []scanner.Step, dfs bool) scanner.ChainReport {
+	if dfs {
+		return runDFSScan(ctx, ips, workers, steps)
+	}
+	return runBFSScan(ctx, ips, workers, steps)
+}
+
+// runBFSScan uses the stable BFS pipeline: all IPs through step 1, then step 2, etc.
+func runBFSScan(ctx context.Context, ips []string, workers int, steps []scanner.Step) scanner.ChainReport {
+	w := os.Stderr
+	tty := isTTY()
+
+	if tty {
+		fmt.Fprintf(w, "  %s── Pipeline (BFS): ", colorDim)
+		for i, s := range steps {
+			if i > 0 {
+				fmt.Fprintf(w, " → ")
+			}
+			fmt.Fprintf(w, "%s", s.Name)
+		}
+		fmt.Fprintf(w, " ──%s\n\n", colorReset)
+	}
+
+	report := scanner.RunChainQuietCtx(ctx, ips, workers, steps, func(stepName string) scanner.ProgressFunc {
+		if !tty {
+			return nil
+		}
+		return func(done, total, passed, failed int) {
+			pct := 0
+			if total > 0 {
+				pct = done * 100 / total
+			}
+			bar := progressBar(pct, 20)
+			fmt.Fprintf(w, "\r\033[2K  %s%s%s  %s  %d/%d  %s✔ %d%s  %s✘ %d%s",
+				colorBold, stepName, colorReset, bar, done, total,
+				colorGreen, passed, colorReset,
+				colorRed, failed, colorReset)
+		}
+	})
+
+	if tty {
+		fmt.Fprintf(w, "\r\033[2K  %s✔%s Pipeline complete  %s%d/%d passed%s\n",
+			colorGreen, colorReset,
+			colorGreen, len(report.Passed), len(ips), colorReset)
+	}
+
+	// Live-write IP file
+	if outputFile != "" && len(report.Passed) > 0 {
+		ipPath := strings.TrimSuffix(outputFile, ".json") + "_ips.txt"
+		scanner.WriteIPList(report.Passed, ipPath)
+	}
+
+	return report
+}
+
+// runDFSScan runs the DFS-style pipeline where each worker processes
 // one IP through ALL steps sequentially. Results appear as soon as individual
 // IPs complete the pipeline — no waiting for all IPs to finish a step.
-func runPipelineScan(ctx context.Context, ips []string, workers int, steps []scanner.Step) scanner.ChainReport {
+func runDFSScan(ctx context.Context, ips []string, workers int, steps []scanner.Step) scanner.ChainReport {
 	ch := scanner.RunPipeline(ctx, ips, workers, steps)
 
 	w := os.Stderr
