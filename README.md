@@ -21,6 +21,7 @@ Supports both **UDP** and **DoH (DNS-over-HTTPS)** resolvers with end-to-end tun
 | 🚇 **E2E Tunnel Verification** | Actually launches DNSTT/Slipstream clients to verify real connectivity |
 | 📥 **Resolver List Fetcher** | Auto-download thousands of resolvers from public sources |
 | 🌍 **Regional Resolver Lists** | Built-in support for regional intranet resolver lists (7,800+ IPs) |
+| 🚀 **DFS Pipeline** | Each worker runs one IP through all steps — results appear in seconds, not hours |
 | ⚡ **High Concurrency** | 50 parallel workers by default — scans thousands of resolvers in minutes |
 | 📋 **JSON Pipeline** | Output from one scan feeds into the next for multi-stage filtering |
 | 🌐 **CIDR Input** | Accept IP ranges like `185.51.200.0/24` — auto-expanded to individual hosts |
@@ -279,6 +280,8 @@ findns scan --domain t.example.com
 **UDP mode pipeline:** `ping → nxdomain → resolve/tunnel → e2e` (add `--edns` for EDNS, `--throughput` for payload test, `--discover` for neighbor scanning)
 **DoH mode pipeline:** `doh/resolve/tunnel → doh/e2e`
 
+> **DFS pipeline:** Each worker takes one IP and runs it through ALL steps. If any step fails, the worker immediately moves to the next IP. Results appear as soon as individual IPs complete the full pipeline — no waiting for all IPs to finish a step. Passed IPs are written to `_ips.txt` in real-time.
+>
 > When `--domain` is set, the basic `resolve` step (A record for google.com) is skipped — tunnel domains have no A record, so findns goes straight to `resolve/tunnel`.
 
 | Flag | Description | Default |
@@ -293,10 +296,12 @@ findns scan --domain t.example.com
 | `--discover` | Auto-discover neighbor /24 subnets when resolvers pass all steps | `false` |
 | `--discover-rounds` | Max neighbor discovery rounds | `3` |
 | `--cidr` | Scan a CIDR range directly (e.g. `--cidr 5.52.0.0/16`) | — |
+| `--cidr-file` | Text file with one CIDR range per line | — |
+| `--query-size` | Cap dnstt-client upstream query size in bytes (0 = max) | `50` |
 | `--skip-ping` | Skip ICMP ping step | `false` |
 | `--skip-nxdomain` | Skip NXDOMAIN hijack check | `false` |
 | `--top` | Number of top results to display | `10` |
-| `--output-ips` | Write plain IP list alongside JSON | auto |
+| `--output-ips` | Write plain IP list alongside JSON (live-appended during scan) | auto |
 | `--batch` | Scan N resolvers at a time, saving after each batch | `0` (all) |
 | `--resume` | Skip IPs already in the output file | `false` |
 
@@ -558,7 +563,7 @@ Step format: `type:key=val,key=val`. Optional params: `count`, `timeout`.
 | `--timeout` | `-t` | Timeout per attempt (seconds) | 3 |
 | `--count` | `-c` | Attempts per IP/URL | 3 |
 | `--workers` | | Concurrent workers | 50 |
-| `--e2e-timeout` | | Timeout for e2e tests (seconds) | 20 |
+| `--e2e-timeout` | | Timeout for e2e tests (seconds) | 30 |
 | `--include-failed` | | Also scan failed entries from JSON input | false |
 
 ---
@@ -683,6 +688,7 @@ MIT
 | 🚇 **تست واقعی تانل** | واقعاً کلاینت DNSTT/Slipstream را اجرا می‌کند و اتصال را تأیید می‌کند |
 | 📥 **دانلود لیست resolver** | دانلود خودکار از منابع عمومی |
 | 🌍 **resolverهای محلی** | لیست داخلی 7,800+ آی‌پی resolver منطقه‌ای |
+| 🚀 **پایپلاین DFS** | هر worker یک آی‌پی را از تمام مراحل رد می‌کند — نتایج در ثانیه‌ها نه ساعت‌ها |
 | ⚡ **همزمانی بالا** | 50 worker موازی — هزاران resolver در چند دقیقه اسکن می‌شود |
 | 📋 **خروجی JSON** | خروجی هر اسکن ورودی اسکن بعدی می‌شود |
 | 🌐 **ورودی CIDR** | رنج آی‌پی مثل `185.51.200.0/24` را می‌خواند و به صورت خودکار باز می‌کند |
@@ -986,6 +992,8 @@ findns tui
 **حالت UDP:** `ping → nxdomain → resolve/tunnel → e2e` (با `--edns` مرحله EDNS، با `--throughput` تست انتقال دیتا، با `--discover` کشف همسایه اضافه می‌شود)
 **حالت DoH:** `doh/resolve/tunnel → doh/e2e`
 
+> **پایپلاین DFS:** هر worker یک آی‌پی را از تمام مراحل رد می‌کند. اگر هر مرحله فیل شد، فوراً آی‌پی بعدی را شروع می‌کند. نتایج به محض عبور هر آی‌پی از تمام مراحل نمایش داده می‌شوند — نیازی به صبر کردن تا تمام آی‌پی‌ها مرحله اول را تمام کنند نیست. آی‌پی‌های موفق به صورت زنده در فایل `_ips.txt` نوشته می‌شوند.
+
 > وقتی `--domain` تنظیم شود، مرحله `resolve` ساده (رکورد A برای google.com) رد می‌شود — دامنه‌های تانل رکورد A ندارند، بنابراین findns مستقیم به `resolve/tunnel` می‌رود.
 
 | فلگ | توضیح | پیش‌فرض |
@@ -1000,10 +1008,12 @@ findns tui
 | `--discover` | کشف خودکار /24 همسایه وقتی resolver پاس شد | `false` |
 | `--discover-rounds` | حداکثر تعداد دورهای کشف همسایه | `3` |
 | `--cidr` | اسکن مستقیم رنج CIDR (مثلاً `--cidr 5.52.0.0/16`) | — |
+| `--cidr-file` | فایل متنی با هر خط یک رنج CIDR | — |
+| `--query-size` | محدود کردن سایز کوئری upstream (بایت، 0 = حداکثر) | `50` |
 | `--skip-ping` | رد کردن مرحله ping | `false` |
 | `--skip-nxdomain` | رد کردن بررسی هایجک | `false` |
 | `--top` | تعداد نتایج برتر برای نمایش | `10` |
-| `--output-ips` | خروجی لیست آی‌پی ساده کنار JSON | خودکار |
+| `--output-ips` | خروجی لیست آی‌پی ساده کنار JSON (زنده در حین اسکن) | خودکار |
 | `--batch` | اسکن N ریزالور در هر دسته (ذخیره بعد هر دسته) | `0` (همه) |
 | `--resume` | رد کردن آی‌پی‌هایی که قبلاً اسکن شده‌اند | `false` |
 
