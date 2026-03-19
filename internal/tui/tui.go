@@ -79,6 +79,7 @@ type Model struct {
 	pipelinePassed int
 	pipelineFailed int
 	recentPassed   []scanner.IPRecord
+	resultsScroll  int // scroll offset for live results during scan
 	pStepTested    []int
 	pStepPassed    []int
 	pStepFailed    []int

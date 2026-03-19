@@ -683,6 +683,17 @@ func runPipelineScan(ctx context.Context, ips []string, workers int, steps []sca
 	start := time.Now()
 	tty := isTTY()
 
+	// Open IP file for live appending
+	var ipLiveFile *os.File
+	if outputFile != "" {
+		ipPath := strings.TrimSuffix(outputFile, ".json") + "_ips.txt"
+		f, err := os.OpenFile(ipPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			ipLiveFile = f
+			defer ipLiveFile.Close()
+		}
+	}
+
 	// Print pipeline banner
 	if tty {
 		fmt.Fprintf(w, "  %s── Pipeline: ", colorDim)
@@ -714,6 +725,11 @@ func runPipelineScan(ctx context.Context, ips []string, workers int, steps []sca
 			}
 			pass++
 			report.Passed = append(report.Passed, scanner.IPRecord{IP: r.IP, Metrics: r.Metrics})
+
+			// Live append to IP file
+			if ipLiveFile != nil {
+				fmt.Fprintln(ipLiveFile, r.IP)
+			}
 
 			// Show passed IP immediately
 			if tty {

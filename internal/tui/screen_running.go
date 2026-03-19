@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -153,6 +154,17 @@ func launchScan(ctx context.Context, ips []string, cfg ScanConfig, steps []scann
 			}
 		}()
 
+		// Open IP list file for live appending
+		var ipFile *os.File
+		if cfg.OutputFile != "" {
+			ipPath := strings.TrimSuffix(cfg.OutputFile, ".json") + "_ips.txt"
+			f, err := os.OpenFile(ipPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			if err == nil {
+				ipFile = f
+				defer ipFile.Close()
+			}
+		}
+
 		start := time.Now()
 		ch := scanner.RunPipeline(ctx, ips, cfg.Workers, steps)
 
@@ -179,6 +191,10 @@ func launchScan(ctx context.Context, ips []string, cfg ScanConfig, steps []scann
 				report.Passed = append(report.Passed, scanner.IPRecord{IP: r.IP, Metrics: r.Metrics})
 				latestIP = r.IP
 				latestMetrics = r.Metrics
+				// Live append to IP file
+				if ipFile != nil {
+					fmt.Fprintln(ipFile, r.IP)
+				}
 			} else {
 				for si := 0; si <= r.FailedStep; si++ {
 					stepTested[si]++
@@ -300,13 +316,15 @@ func updateRunning(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		copy(m.pStepPassed, msg.stepPassed)
 		copy(m.pStepFailed, msg.stepFailed)
 
-		// Track recent passed IPs (last 8)
+		// Track ALL passed IPs and auto-scroll to bottom
 		if msg.latestIP != "" {
 			m.recentPassed = append(m.recentPassed, scanner.IPRecord{
 				IP: msg.latestIP, Metrics: msg.latestMetrics,
 			})
-			if len(m.recentPassed) > 8 {
-				m.recentPassed = m.recentPassed[len(m.recentPassed)-8:]
+			// Auto-scroll to show latest result
+			visRows := m.liveVisibleRows()
+			if len(m.recentPassed) > visRows {
+				m.resultsScroll = len(m.recentPassed) - visRows
 			}
 		}
 
@@ -334,20 +352,43 @@ func updateRunning(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "ctrl+c":
 			if m.scanCancel != nil {
 				m.scanCancel()
 			}
 			return m, tea.Quit
-		}
-		if msg.String() == "q" {
+		case "q":
 			if m.scanCancel != nil && !m.cancelling {
 				m.scanCancel()
 				m.cancelling = true
 			}
+		case "up", "k":
+			if m.resultsScroll > 0 {
+				m.resultsScroll--
+			}
+		case "down", "j":
+			maxScroll := len(m.recentPassed) - m.liveVisibleRows()
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.resultsScroll < maxScroll {
+				m.resultsScroll++
+			}
 		}
 	}
 	return m, nil
+}
+
+// liveVisibleRows returns how many result rows fit during scanning.
+func (m Model) liveVisibleRows() int {
+	// Overhead: title(2) + progress(3) + pipeline(2) + steps(N+2) + results_header(2) + scroll_hint(1) + footer(3)
+	overhead := 15 + len(m.steps)
+	rows := m.height - overhead
+	if rows < 3 {
+		rows = 3
+	}
+	return rows
 }
 
 type tickMsg time.Time
@@ -436,39 +477,77 @@ func viewRunning(m Model) string {
 		b.WriteString("\n")
 	}
 
-	// Recent passed IPs
+	// Passed IPs — scrollable table with all metrics
 	if len(m.recentPassed) > 0 {
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  Recent results:"))
+		b.WriteString(greenStyle.Render(fmt.Sprintf("  Passed: %d", len(m.recentPassed))))
 		b.WriteString("\n")
-		for _, r := range m.recentPassed {
-			var parts []string
-			if r.Metrics != nil {
-				keys := make([]string, 0, len(r.Metrics))
-				for k := range r.Metrics {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-				for _, k := range keys {
-					v := r.Metrics[k]
+
+		// Determine metric columns from first result
+		var metricKeys []string
+		if m.recentPassed[0].Metrics != nil {
+			for k := range m.recentPassed[0].Metrics {
+				metricKeys = append(metricKeys, k)
+			}
+			sort.Strings(metricKeys)
+		}
+
+		// Header
+		header := fmt.Sprintf("  %-4s %-17s", "#", "IP")
+		for _, k := range metricKeys {
+			header += fmt.Sprintf("  %-10s", k)
+		}
+		b.WriteString(dimStyle.Render(header))
+		b.WriteString("\n")
+
+		// Visible rows
+		visRows := m.liveVisibleRows()
+		start := m.resultsScroll
+		end := start + visRows
+		if end > len(m.recentPassed) {
+			end = len(m.recentPassed)
+		}
+		if start > len(m.recentPassed) {
+			start = len(m.recentPassed)
+		}
+
+		for i := start; i < end; i++ {
+			r := m.recentPassed[i]
+			row := fmt.Sprintf("  %-4d %-17s", i+1, r.IP)
+			for _, k := range metricKeys {
+				if r.Metrics == nil {
+					row += fmt.Sprintf("  %-10s", "-")
+				} else if v, ok := r.Metrics[k]; ok {
 					if v == float64(int(v)) {
-						parts = append(parts, fmt.Sprintf("%s=%d", k, int(v)))
+						row += fmt.Sprintf("  %-10d", int(v))
 					} else {
-						parts = append(parts, fmt.Sprintf("%s=%.1f", k, v))
+						row += fmt.Sprintf("  %-10.1f", v)
 					}
+				} else {
+					row += fmt.Sprintf("  %-10s", "-")
 				}
 			}
-			b.WriteString(fmt.Sprintf("    %s %-15s  %s\n",
-				greenStyle.Render("✔"), r.IP,
-				dimStyle.Render(strings.Join(parts, "  "))))
+			b.WriteString(greenStyle.Render("  ✔"))
+			b.WriteString(row[3:]) // skip leading spaces already covered by ✔
+			b.WriteString("\n")
 		}
+
+		if len(m.recentPassed) > visRows {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  Showing %d-%d of %d  (↑/↓ scroll)",
+				start+1, end, len(m.recentPassed))))
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Waiting for results..."))
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
 	if m.cancelling {
 		b.WriteString(yellowStyle.Render("  Cancelling... waiting for workers"))
 	} else {
-		b.WriteString(dimStyle.Render("  q cancel  ctrl+c quit"))
+		b.WriteString(dimStyle.Render("  ↑/↓ scroll results  q cancel  ctrl+c quit"))
 	}
 	b.WriteString("\n")
 
