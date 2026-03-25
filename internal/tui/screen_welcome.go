@@ -153,6 +153,36 @@ func parseCLIFlags(m *Model, raw string) {
 			m.config.E2E = true
 		case "--doh":
 			m.config.DoH = true
+		case "--discover":
+			m.config.Discover = true
+		case "--discover-rounds":
+			if next != "" {
+				fmt.Sscanf(next, "%d", &m.config.DiscoverRounds)
+				i++
+			}
+		case "--throughput":
+			m.config.Throughput = true
+			m.config.E2E = true
+		case "--socks-user":
+			if next != "" {
+				m.config.SocksUser = next
+				m.configInputs[txtSocksUser].SetValue(next)
+				m.config.E2E = true
+				i++
+			}
+		case "--socks-pass":
+			if next != "" {
+				m.config.SocksPass = next
+				m.configInputs[txtSocksPass].SetValue(next)
+				i++
+			}
+		case "--connect-addr":
+			if next != "" {
+				m.config.ConnectAddr = next
+				m.configInputs[txtConnectAddr].SetValue(next)
+				m.config.E2E = true
+				i++
+			}
 		}
 	}
 }
@@ -232,9 +262,9 @@ func viewWelcome(m Model) string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("    --domain t.example.com --workers 100 --skip-ping"))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("    --doh --edns --output results.json"))
+		b.WriteString(dimStyle.Render("    --pubkey abc123 --domain t.example.com --discover"))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("    --e2e --pubkey abc123 --cert cert.pem"))
+		b.WriteString(dimStyle.Render("    --pubkey abc123 --socks-user user --socks-pass pass"))
 		b.WriteString("\n\n")
 		b.WriteString(dimStyle.Render("  enter confirm  esc cancel"))
 		b.WriteString("\n")
