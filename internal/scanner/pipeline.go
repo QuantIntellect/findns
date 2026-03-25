@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"sync"
 )
 
 // PipelineResult is the outcome of running one IP through the full step pipeline.
@@ -17,6 +18,7 @@ type PipelineResult struct {
 // each worker takes one IP and runs it through the entire pipeline.
 // Results are emitted to the returned channel as each IP completes.
 // The channel is closed when all IPs are processed or the context is cancelled.
+// All goroutines are properly cleaned up on cancellation (no leaks).
 func RunPipeline(ctx context.Context, ips []string, workers int, steps []Step) <-chan PipelineResult {
 	out := make(chan PipelineResult, workers)
 
@@ -33,9 +35,13 @@ func RunPipeline(ctx context.Context, ips []string, workers int, steps []Step) <
 		}
 		results := make(chan PipelineResult, bufSize)
 
-		// Launch workers — each takes one IP and runs ALL steps on it
+		// WaitGroup tracks all workers so we can drain results safely
+		var wg sync.WaitGroup
+
 		for i := 0; i < workers; i++ {
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				for ip := range jobs {
 					func() {
 						defer func() {
@@ -71,23 +77,23 @@ func RunPipeline(ctx context.Context, ips []string, workers int, steps []Step) <
 				select {
 				case jobs <- ip:
 				case <-ctx.Done():
-					close(jobs)
-					return
+					break
 				}
 			}
 			close(jobs)
+			// Wait for all workers to finish, then close results
+			wg.Wait()
+			close(results)
 		}()
 
-		// Forward results to output channel
-		for i := 0; i < len(ips); i++ {
+		// Forward results to output channel until results is closed
+		for r := range results {
 			select {
-			case r := <-results:
-				select {
-				case out <- r:
-				case <-ctx.Done():
-					return
-				}
+			case out <- r:
 			case <-ctx.Done():
+				// Drain remaining results to unblock workers
+				for range results {
+				}
 				return
 			}
 		}

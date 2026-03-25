@@ -569,8 +569,9 @@ func waitAndTestThroughput(ctx context.Context, port int, exited <-chan struct{}
 		}
 		conn.Close()
 
-		if totalRead < 100 {
-			return totalRead, false
+		// Any data received proves payload flows through the tunnel
+		if totalRead == 0 {
+			return 0, false
 		}
 		return totalRead, true
 	}

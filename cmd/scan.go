@@ -78,6 +78,8 @@ func init() {
 	scanCmd.Flags().String("socks-user", "", "SOCKS5 username for e2e tunnel proxy auth")
 	scanCmd.Flags().String("socks-pass", "", "SOCKS5 password for e2e tunnel proxy auth")
 	scanCmd.Flags().String("connect-addr", "", "host:port for SOCKS5 CONNECT probe (default example.com:80, use host:22 for SSH)")
+	scanCmd.Flags().Bool("dfs", false, "use DFS pipeline (each worker runs one IP through all steps; results appear instantly)")
+	scanCmd.Flags().Int("discover-max", 0, "max total IPs per discovery round (0 = no limit)")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -100,7 +102,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	cidrFile, _ := cmd.Flags().GetString("cidr-file")
 	discover, _ := cmd.Flags().GetBool("discover")
 	discoverRounds, _ := cmd.Flags().GetInt("discover-rounds")
+	discoverMax, _ := cmd.Flags().GetInt("discover-max")
 	throughput, _ := cmd.Flags().GetBool("throughput")
+	dfsMode, _ := cmd.Flags().GetBool("dfs")
 	socksUser, _ := cmd.Flags().GetString("socks-user")
 	socksPass, _ := cmd.Flags().GetString("socks-pass")
 	connectAddr, _ := cmd.Flags().GetString("connect-addr")
@@ -319,15 +323,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 		outputIPs = strings.TrimSuffix(outputFile, ".json") + "_ips.txt"
 	}
 
-	// saveResults writes current results to JSON + IP list
+	// saveResults writes current results to JSON + IP list.
+	// In DFS mode, the IP list is live-appended by runPipelineScan,
+	// so we only write it in BFS mode to avoid overwriting.
 	saveResults := func(report scanner.ChainReport) {
-		// Merge with previously loaded results from --resume
 		merged := report
 		if len(allPassed) > 0 {
 			merged.Passed = append(allPassed, report.Passed...)
 		}
 		scanner.WriteChainReport(merged, outputFile)
-		if len(merged.Passed) > 0 {
+		if !dfsMode && len(merged.Passed) > 0 {
 			scanner.WriteIPList(merged.Passed, outputIPs)
 		}
 	}
@@ -342,6 +347,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 	scanStart := time.Now()
 
 	var report scanner.ChainReport
+
+	// runScanChunk runs a chunk of IPs through either BFS (default) or DFS (--dfs)
+	runScanChunk := func(chunk []string) scanner.ChainReport {
+		if dfsMode {
+			return runPipelineScan(ctx, chunk, workers, steps)
+		}
+		return scanner.RunChainQuietCtx(ctx, chunk, workers, steps,
+			newScanProgressFactory(len(steps), stepDescriptions))
+	}
 
 	// --batch: split IPs into chunks, save after each batch
 	if batchSize > 0 && len(ips) > batchSize {
@@ -359,7 +373,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "\n  %s━━━ Batch %d/%d (%d IPs) ━━━%s\n\n",
 				colorCyan, batchNum, totalBatches, len(chunk), colorReset)
 
-			batchReport := runPipelineScan(ctx, chunk, workers, steps)
+			batchReport := runScanChunk(chunk)
 			scanner.MergeChainReports(&report, batchReport)
 
 			saveResults(report)
@@ -368,7 +382,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 				colorGreen, batchNum, totalPassed, outputFile, colorReset)
 		}
 	} else {
-		report = runPipelineScan(ctx, ips, workers, steps)
+		report = runScanChunk(ips)
 	}
 
 	// --discover: find neighbor /24 subnets from passed IPs and scan them
@@ -405,6 +419,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 				break
 			}
 
+			// Cap discovery IPs per round
+			if discoverMax > 0 && len(neighborIPs) > discoverMax {
+				fmt.Fprintf(os.Stderr, "  %s⚠ Capping discovery from %d to %d IPs (--discover-max)%s\n",
+					colorYellow, len(neighborIPs), discoverMax, colorReset)
+				neighborIPs = neighborIPs[:discoverMax]
+			}
+
 			for _, ip := range neighborIPs {
 				scanned[ip] = struct{}{}
 			}
@@ -412,7 +433,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "\n  %s━━━ Discovery round %d: %d new /24 subnets → %d IPs ━━━%s\n\n",
 				colorCyan, round, len(toExpand), len(neighborIPs), colorReset)
 
-			roundReport := runPipelineScan(ctx, neighborIPs, workers, steps)
+			roundReport := runScanChunk(neighborIPs)
 			scanner.MergeChainReports(&report, roundReport)
 
 			saveResults(report)
