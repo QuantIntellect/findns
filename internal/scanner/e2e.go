@@ -406,7 +406,7 @@ func slipstreamCheck(bin, domain, certPath string, ports chan int, opts SOCKS5Op
 				} else if processExitedEarly {
 					setDiag("e2e/slipstream first failure (ip=%s): process exited early with no stderr", ip)
 				} else {
-					setDiag("e2e/slipstream first failure (ip=%s): SOCKS5 handshake through tunnel timed out within %v", ip, timeout)
+					setDiag("e2e/slipstream first failure (ip=%s): SOCKS5 CONNECT did not succeed within %v", ip, timeout)
 				}
 			}
 			return false, nil

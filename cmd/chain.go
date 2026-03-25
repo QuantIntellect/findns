@@ -199,9 +199,6 @@ func runChain(cmd *cobra.Command, args []string) error {
 				}
 				binPaths["slipstream-client"] = bin
 			}
-			if _, err := findBinary("curl"); err != nil {
-				return fmt.Errorf("step %q requires curl in PATH (not found)", cfg.name)
-			}
 		}
 	}
 
